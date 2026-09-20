@@ -1420,6 +1420,8 @@ EOF
 
 install_remnanode() {
 
+    local AUTO_CONFIRM="${1:-no}"
+
     msg_title "9. Установка RemnaNode"
 
     STATUS[9]="RUNNING"
@@ -1453,13 +1455,27 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
+    # Проверяем, нужно ли автоматически подтверждать первый вопрос.
+    # Автоподтверждение работает только если:
+    # 1. Передан параметр AUTO_CONFIRM="yes" (вызов из install_1_to_9)
+    # 2. Директория /opt/remnanode уже существует (RemnaNode уже установлен)
+
+    local should_auto_confirm="no"
+
+    if [[ "$AUTO_CONFIRM" == "yes" ]] && [[ -d "$REMNANODE_DIR" ]]; then
+        should_auto_confirm="yes"
+        msg_info "Автоматическое подтверждение первого вопроса включено."
+    else
+        msg_info "Автоматическое подтверждение отключено."
+    fi
+
+    echo
+
     # Используем Python с pty для создания псевдотерминала.
     # Работаем напрямую с /dev/tty, потому что скрипт запущен
     # через tee и fd 0/1 — это пайпы, а не терминал.
-    # Автоматически отправляем 'y' на первый вопрос,
-    # затем передаём управление пользователю.
 
-    python3 - "$node_installer" <<'PYEOF'
+    python3 - "$node_installer" "$should_auto_confirm" <<'PYEOF'
 import pty
 import os
 import sys
@@ -1469,6 +1485,7 @@ import termios
 import tty
 
 installer = sys.argv[1]
+auto_confirm = sys.argv[2] == "yes"
 
 pid, fd = pty.fork()
 
@@ -1479,9 +1496,10 @@ if pid == 0:
 # Открываем /dev/tty напрямую (обходим tee)
 tty_fd = os.open("/dev/tty", os.O_RDWR)
 
-# Ждём появления первого вопроса и отправляем 'y'
-time.sleep(1)
-os.write(fd, b"y\n")
+# Если нужно автоподтверждение — ждём и отправляем 'y'
+if auto_confirm:
+    time.sleep(1)
+    os.write(fd, b"y\n")
 
 # Сохраняем настройки терминала
 old_tty = termios.tcgetattr(tty_fd)
@@ -1811,7 +1829,9 @@ install_1_to_9() {
     # 9
     # ========================================================
 
-    install_remnanode
+    # Передаём "yes" для автоподтверждения первого вопроса,
+    # если /opt/remnanode уже существует.
+    install_remnanode yes
 
     STATUS[11]="OK"
 
