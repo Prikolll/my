@@ -7,6 +7,8 @@
 
 set -u
 
+cd /root || exit 1
+
 LOG_FILE="/var/log/remnawave-bootstrap.log"
 
 REMNANODE_DIR="/opt/remnanode"
@@ -96,6 +98,7 @@ status_not_run() {
 }
 
 print_status() {
+
     echo
     echo "============================================================"
     echo "                    СТАТУС УСТАНОВКИ"
@@ -114,9 +117,11 @@ print_status() {
         "10. Fail2ban"
     )
 
+    local item
     local key
 
     for item in "${items[@]}"; do
+
         key="${item%%.*}"
 
         printf "%-25s : %s\n" \
@@ -126,11 +131,6 @@ print_status() {
 
     echo "============================================================"
     echo
-}
-
-run_cmd() {
-    "$@"
-    return $?
 }
 
 # ============================================================
@@ -145,9 +145,11 @@ install_fwupd() {
     echo "============================================================"
 
     echo "Останавливаем fwupd..."
+
     systemctl stop fwupd.service 2>/dev/null || true
 
     echo "Отключаем автозапуск..."
+
     systemctl disable fwupd.service 2>/dev/null || true
 
     echo "Создаём persistent mask..."
@@ -157,18 +159,18 @@ install_fwupd() {
     if systemctl mask fwupd.service; then
         mask_ok=true
     else
+
         echo "Обычный systemctl mask завершился с ошибкой."
 
-        # Иногда в /etc/systemd/system уже существует некорректный
-        # файл/ссылка fwupd.service.
         if [[ -e /etc/systemd/system/fwupd.service ||
               -L /etc/systemd/system/fwupd.service ]]; then
 
-            echo "Обнаружен конфликтующий /etc/systemd/system/fwupd.service."
+            echo "Обнаружен конфликтующий fwupd.service."
 
             rm -f /etc/systemd/system/fwupd.service
 
             ln -s /dev/null /etc/systemd/system/fwupd.service
+
             systemctl daemon-reload
         fi
     fi
@@ -176,7 +178,10 @@ install_fwupd() {
     systemctl daemon-reload
 
     local mask_target
-    mask_target="$(readlink -f /etc/systemd/system/fwupd.service 2>/dev/null || true)"
+
+    mask_target="$(
+        readlink -f /etc/systemd/system/fwupd.service 2>/dev/null || true
+    )"
 
     if [[ "$mask_target" == "/dev/null" ]]; then
         mask_ok=true
@@ -188,19 +193,24 @@ install_fwupd() {
 
     echo
     echo "Проверка:"
+
     systemctl is-enabled fwupd.service 2>/dev/null || true
     systemctl is-active fwupd.service 2>/dev/null || true
+
     echo "Mask target: ${mask_target:-не найден}"
 
     if [[ "$mask_ok" == true ]]; then
+
         echo
         echo "fwupd успешно отключён и замаскирован."
+
         status_ok "1"
         return 0
     fi
 
     echo
     echo "ОШИБКА: не удалось подтвердить mask fwupd."
+
     status_failed "1"
     return 1
 }
@@ -220,6 +230,7 @@ update_system() {
 
         echo
         echo "Доступные обновления:"
+
         apt list --upgradable || true
 
         status_ok "2"
@@ -228,6 +239,7 @@ update_system() {
 
     echo
     echo "Ошибка apt update."
+
     status_failed "2"
     return 1
 }
@@ -250,26 +262,33 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 
     echo "Применяем sysctl..."
+
     sysctl --system
 
     local ipv6_all
-    ipv6_all="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0)"
+
+    ipv6_all="$(
+        sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0
+    )"
 
     if [[ "$ipv6_all" == "1" ]]; then
+
         echo
         echo "IPv6 отключён."
+
         status_ok "3"
         return 0
     fi
 
     echo
     echo "Не удалось подтвердить отключение IPv6."
+
     status_failed "3"
     return 1
 }
 
 # ============================================================
-# 4. BBR / NETWORK SYSCTL
+# 4. BBR / NETWORK
 # ============================================================
 
 configure_bbr() {
@@ -338,10 +357,12 @@ fs.file-max = 1048576
 EOF
 
     echo "Применяем настройки..."
+
     sysctl --system
 
     echo
     echo "Проверка BBR:"
+
     echo "Congestion control:"
     sysctl net.ipv4.tcp_congestion_control
 
@@ -350,31 +371,39 @@ EOF
     sysctl net.core.default_qdisc
 
     local cc
-    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+
+    cc="$(
+        sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true
+    )"
 
     if [[ "$cc" == "bbr" ]]; then
+
         echo
         echo "BBR активен."
+
         status_ok "4"
         return 0
     fi
 
     echo
     echo "Внимание: BBR не активен."
+
     status_failed "4"
     return 1
 }
 
 # ============================================================
-# ZAPRET - MODIFY DOCKER COMPOSE
+# ZAPRET — MODIFY COMPOSE
 # ============================================================
 
 configure_remnanode_zapret() {
 
     if [[ ! -f "$REMNANODE_COMPOSE" ]]; then
+
         echo
         echo "Compose Node не найден:"
         echo "$REMNANODE_COMPOSE"
+
         return 1
     fi
 
@@ -386,6 +415,7 @@ configure_remnanode_zapret() {
         "$REMNANODE_COMPOSE"; then
 
         echo "Mount Zapret.dat уже присутствует."
+
         return 0
     fi
 
@@ -395,6 +425,7 @@ configure_remnanode_zapret() {
 
     cp -a "$REMNANODE_COMPOSE" "$backup"
 
+    echo
     echo "Backup:"
     echo "$backup"
 
@@ -408,7 +439,6 @@ with open(path, "r", encoding="utf-8") as f:
 
 mount = "      - /opt/remnanode/xray/share/zapret.dat:/usr/local/bin/zapret.dat:ro\n"
 
-# Найти service remnanode
 service_start = None
 
 for i, line in enumerate(lines):
@@ -417,9 +447,8 @@ for i, line in enumerate(lines):
         break
 
 if service_start is None:
-    raise SystemExit("Не найден service 'remnanode:' в docker-compose.yml")
+    raise SystemExit("Не найден service 'remnanode:'")
 
-# Найти конец service remnanode
 service_end = len(lines)
 
 for i in range(service_start + 1, len(lines)):
@@ -427,10 +456,8 @@ for i in range(service_start + 1, len(lines)):
         service_end = i
         break
 
-# Проверка внутри service
 service_lines = lines[service_start:service_end]
 
-# Если volumes существует
 volumes_index = None
 
 for i, line in enumerate(service_lines):
@@ -439,10 +466,11 @@ for i, line in enumerate(service_lines):
         break
 
 if volumes_index is not None:
+
     insert_at = service_start + volumes_index + 1
 
-    # Ищем конец volumes
     for j in range(volumes_index + 1, len(service_lines)):
+
         line = service_lines[j]
 
         if line.startswith("    ") and not line.startswith("      "):
@@ -458,7 +486,7 @@ if volumes_index is not None:
     lines.insert(insert_at, mount)
 
 else:
-    # Создаём volumes перед следующим service
+
     insert_at = service_end
 
     block = [
@@ -478,8 +506,10 @@ PY
     echo "Проверяем Docker Compose..."
 
     if ! command -v docker >/dev/null 2>&1; then
+
         echo "Docker пока не установлен."
-        echo "Mount сохранён в Compose; проверка будет выполнена после установки Node."
+        echo "Mount сохранён и будет проверен после установки Node."
+
         return 0
     fi
 
@@ -489,6 +519,7 @@ PY
     ); then
 
         echo "Docker Compose configuration OK."
+
         return 0
     fi
 
@@ -522,13 +553,16 @@ install_zapret() {
 
         echo
         echo "Ошибка загрузки Zapret.dat."
+
         status_failed "5"
         return 1
     fi
 
     if [[ ! -s "$ZAPRET_FILE" ]]; then
+
         echo
         echo "Zapret.dat пустой."
+
         status_failed "5"
         return 1
     fi
@@ -541,55 +575,63 @@ install_zapret() {
 
     INSTALL_ZAPRET=true
 
-    # Если Node уже установлен — сразу модифицируем Compose
+    # --------------------------------------------------------
+    # Если Node уже существует — сразу применяем
+    # --------------------------------------------------------
+
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
         echo
         echo "Remnawave Node уже установлен."
         echo "Добавляем mount Zapret.dat..."
 
-        if configure_remnanode_zapret; then
+        if ! configure_remnanode_zapret; then
 
             echo
-            echo "Перезапускаем Remnawave Node..."
+            echo "Не удалось настроить Zapret.dat."
 
-            (
-                cd "$REMNANODE_DIR" &&
-                docker compose down &&
-                docker compose up -d
-            )
-
-            if [[ $? -eq 0 ]]; then
-                echo
-                echo "Node перезапущен."
-
-                (
-                    cd "$REMNANODE_DIR" &&
-                    docker compose ps
-                )
-
-                status_ok "5"
-                return 0
-            fi
+            status_failed "5"
+            return 1
         fi
 
         echo
-        echo "Не удалось настроить/перезапустить Node."
-        status_failed "5"
-        return 1
+        echo "Перезапускаем Remnawave Node..."
+
+        if ! (
+            cd "$REMNANODE_DIR" &&
+            docker compose down &&
+            docker compose up -d
+        ); then
+
+            echo
+            echo "Ошибка перезапуска Node."
+
+            status_failed "5"
+            return 1
+        fi
+
+        echo
+        echo "Node перезапущен."
+
+        (
+            cd "$REMNANODE_DIR" &&
+            docker compose ps
+        ) || true
+
+        status_ok "5"
+        return 0
     fi
 
     echo
     echo "Node пока не установлен."
     echo "Zapret.dat сохранён."
-    echo "После установки Node mount будет добавлен автоматически."
 
     status_ok "5"
     return 0
 }
 
 # ============================================================
-# WARP CONFIG MODIFICATION
+# WARP CONFIG
 # ============================================================
 
 configure_warp_conf() {
@@ -598,13 +640,14 @@ configure_warp_conf() {
     local address="$2"
 
     if [[ ! -f "$conf" ]]; then
+
         echo "Файл не найден: $conf"
+
         return 1
     fi
 
     python3 - "$conf" "$address" <<'PY'
 import sys
-import re
 
 path = sys.argv[1]
 address = sys.argv[2]
@@ -625,8 +668,10 @@ for line in lines:
         continue
 
     if line.strip() == "[Interface]":
+
         new_lines.append(line)
         new_lines.append(f"Address = {address}\n")
+
         address_added = True
         continue
 
@@ -635,7 +680,7 @@ for line in lines:
 lines = new_lines
 
 # ------------------------------------------------------------
-# AllowedIPs — удалить IPv6, оставить IPv4
+# AllowedIPs — удалить IPv6
 # ------------------------------------------------------------
 
 new_lines = []
@@ -645,11 +690,16 @@ for line in lines:
     if line.strip().startswith("AllowedIPs ="):
 
         value = line.split("=", 1)[1].strip()
-        entries = [x.strip() for x in value.split(",")]
+
+        entries = [
+            x.strip()
+            for x in value.split(",")
+        ]
 
         ipv4_entries = []
 
         for entry in entries:
+
             if ":" not in entry:
                 ipv4_entries.append(entry)
 
@@ -660,16 +710,14 @@ for line in lines:
 lines = new_lines
 
 # ------------------------------------------------------------
-# Удалить IPv6 Endpoint
+# IPv6 Endpoint
 # ------------------------------------------------------------
 
 new_lines = []
 
 for line in lines:
 
-    stripped = line.strip()
-
-    if stripped.startswith("Endpoint = ["):
+    if line.strip().startswith("Endpoint = ["):
         continue
 
     new_lines.append(line)
@@ -696,16 +744,20 @@ mtu_index = None
 for i, line in enumerate(lines):
 
     if line.strip().startswith("MTU ="):
+
         mtu_index = i
         break
 
 if mtu_index is None:
     raise SystemExit("Не найден MTU в WireGuard config")
 
-lines.insert(mtu_index + 1, "Table = off\n")
+lines.insert(
+    mtu_index + 1,
+    "Table = off\n"
+)
 
 # ------------------------------------------------------------
-# PersistentKeepalive = 25 после Endpoint
+# PersistentKeepalive
 # ------------------------------------------------------------
 
 new_lines = []
@@ -718,12 +770,19 @@ for line in lines:
 
     new_lines.append(line)
 
-    if line.strip().startswith("Endpoint = engage.cloudflareclient.com:2408"):
-        new_lines.append("PersistentKeepalive = 25\n")
+    if line.strip() == "Endpoint = engage.cloudflareclient.com:2408":
+
+        new_lines.append(
+            "PersistentKeepalive = 25\n"
+        )
+
         endpoint_found = True
 
 if not endpoint_found:
-    raise SystemExit("Не найден Endpoint = engage.cloudflareclient.com:2408")
+
+    raise SystemExit(
+        "Не найден Endpoint = engage.cloudflareclient.com:2408"
+    )
 
 lines = new_lines
 
@@ -737,6 +796,7 @@ PY
 
     echo
     echo "Проверяем:"
+
     grep -E \
         '^(Address|MTU|Table|AllowedIPs|Endpoint|PersistentKeepalive)' \
         "$conf" || true
@@ -756,17 +816,20 @@ install_warp() {
     echo "Устанавливаем WireGuard..."
 
     if ! apt install -y wireguard; then
+
         echo
         echo "Ошибка установки WireGuard."
+
         status_failed "6"
         return 1
     fi
 
+    local tmpdir
+
+    tmpdir="$(mktemp -d)"
+
     echo
     echo "Скачиваем wgcf 2.3.0..."
-
-    local tmpdir
-    tmpdir="$(mktemp -d)"
 
     if ! curl -fL --retry 3 \
         "$WGCF_URL" \
@@ -776,12 +839,16 @@ install_warp() {
 
         echo
         echo "Ошибка загрузки wgcf."
+
         status_failed "6"
         return 1
     fi
 
     chmod +x "$tmpdir/wgcf"
-    install -m 755 "$tmpdir/wgcf" /usr/local/bin/wgcf
+
+    install -m 755 \
+        "$tmpdir/wgcf" \
+        /usr/local/bin/wgcf
 
     rm -rf "$tmpdir"
 
@@ -797,6 +864,7 @@ install_warp() {
     echo "Создаём WARP профиль #1..."
 
     local warp1_tmp
+
     warp1_tmp="$(mktemp -d)"
 
     cd "$warp1_tmp" || return 1
@@ -804,24 +872,35 @@ install_warp() {
     rm -f wgcf-account.toml wgcf-profile.conf
 
     if ! wgcf register; then
+
         rm -rf "$warp1_tmp"
+
         echo "Ошибка регистрации WARP #1."
+
         status_failed "6"
         return 1
     fi
 
     if ! wgcf generate; then
+
         rm -rf "$warp1_tmp"
+
         echo "Ошибка генерации WARP #1."
+
         status_failed "6"
         return 1
     fi
 
-    install -m 600 wgcf-profile.conf "$WARP1_CONF"
+    install -m 600 \
+        wgcf-profile.conf \
+        "$WARP1_CONF"
 
     rm -rf "$warp1_tmp"
 
-    configure_warp_conf "$WARP1_CONF" "172.16.0.2/32" || {
+    configure_warp_conf \
+        "$WARP1_CONF" \
+        "172.16.0.2/32" || {
+
         status_failed "6"
         return 1
     }
@@ -834,6 +913,7 @@ install_warp() {
     echo "Создаём WARP профиль #2..."
 
     local warp2_tmp
+
     warp2_tmp="$(mktemp -d)"
 
     cd "$warp2_tmp" || return 1
@@ -841,24 +921,35 @@ install_warp() {
     rm -f wgcf-account.toml wgcf-profile.conf
 
     if ! wgcf register; then
+
         rm -rf "$warp2_tmp"
+
         echo "Ошибка регистрации WARP #2."
+
         status_failed "6"
         return 1
     fi
 
     if ! wgcf generate; then
+
         rm -rf "$warp2_tmp"
+
         echo "Ошибка генерации WARP #2."
+
         status_failed "6"
         return 1
     fi
 
-    install -m 600 wgcf-profile.conf "$WARP2_CONF"
+    install -m 600 \
+        wgcf-profile.conf \
+        "$WARP2_CONF"
 
     rm -rf "$warp2_tmp"
 
-    configure_warp_conf "$WARP2_CONF" "172.16.0.3/32" || {
+    configure_warp_conf \
+        "$WARP2_CONF" \
+        "172.16.0.3/32" || {
+
         status_failed "6"
         return 1
     }
@@ -914,15 +1005,19 @@ EOF
     echo "Запускаем WARP..."
 
     if ! systemctl restart warp.service; then
+
         echo
         echo "Ошибка запуска WARP."
+
         systemctl status warp.service --no-pager || true
+
         status_failed "6"
         return 1
     fi
 
     echo
     echo "wg show:"
+
     wg show
 
     echo
@@ -940,6 +1035,7 @@ EOF
 
     echo
     echo "Не удалось подтвердить запуск обоих WARP интерфейсов."
+
     status_failed "6"
     return 1
 }
@@ -955,9 +1051,120 @@ install_remnanode() {
     echo "7. REMNAWAVE NODE"
     echo "============================================================"
 
+    # --------------------------------------------------------
+    # Защита от getcwd
+    # --------------------------------------------------------
+
+    cd /root || {
+        echo "Не удалось перейти в /root."
+        status_failed "7"
+        return 1
+    }
+
+    # --------------------------------------------------------
+    # Node уже установлен?
+    # --------------------------------------------------------
+
+    if [[ -f "$REMNANODE_COMPOSE" ]]; then
+
+        echo
+        echo "Remnawave Node уже установлен:"
+        echo "$REMNANODE_COMPOSE"
+
+        echo
+        echo "Проверяем Docker Compose..."
+
+        if (
+            cd "$REMNANODE_DIR" &&
+            docker compose config >/dev/null
+        ); then
+
+            echo
+            echo "Docker Compose configuration OK."
+
+            # ------------------------------------------------
+            # Zapret
+            # ------------------------------------------------
+
+            if [[ "$INSTALL_ZAPRET" == true ]]; then
+
+                echo
+                echo "Проверяем Zapret.dat..."
+
+                if [[ -f "$ZAPRET_FILE" ]]; then
+
+                    configure_remnanode_zapret || {
+
+                        status_failed "7"
+                        return 1
+                    }
+
+                    echo
+                    echo "Перезапускаем Node..."
+
+                    if ! (
+                        cd "$REMNANODE_DIR" &&
+                        docker compose down &&
+                        docker compose up -d
+                    ); then
+
+                        echo
+                        echo "Ошибка перезапуска Node."
+
+                        status_failed "7"
+                        return 1
+                    fi
+                else
+
+                    echo
+                    echo "Zapret.dat не найден:"
+                    echo "$ZAPRET_FILE"
+                fi
+            fi
+
+            echo
+            echo "Текущий статус Node:"
+
+            (
+                cd "$REMNANODE_DIR" &&
+                docker compose ps
+            ) || true
+
+            echo
+            echo "Существующая установка Node используется."
+
+            status_ok "7"
+
+            cd /root || true
+
+            return 0
+
+        else
+
+            echo
+            echo "Существующий docker-compose.yml содержит ошибку."
+
+            if ! ask_yes_no "Попробовать переустановить Remnawave Node"; then
+
+                echo
+                echo "Переустановка отменена."
+
+                status_skipped "7"
+
+                return 0
+            fi
+        fi
+    fi
+
+    # --------------------------------------------------------
+    # Download installer
+    # --------------------------------------------------------
+
     local node_installer
+
     node_installer="$(mktemp /tmp/remnanode-installer.XXXXXX.sh)"
 
+    echo
     echo "Скачиваем installer..."
 
     if ! curl -fL --retry 3 \
@@ -968,6 +1175,7 @@ install_remnanode() {
 
         echo
         echo "Ошибка загрузки remnanode.sh."
+
         status_failed "7"
         return 1
     fi
@@ -977,81 +1185,189 @@ install_remnanode() {
     echo
     echo "Запускаем установщик Remnawave Node."
     echo
-    echo "ВАЖНО:"
-    echo "Если установщик завис или работает бесконечно,"
-    echo "нажмите Ctrl+C."
+    echo "Если установка зависнет — нажмите Ctrl+C."
     echo
-    echo "Ctrl+C прервет только установщик Node,"
-    echo "после чего этот bootstrap-скрипт продолжит работу."
+    echo "Ctrl+C остановит только установщик Node."
+    echo "Bootstrap продолжит работу и вернётся в меню."
     echo
 
     local installer_exit=0
     local node_interrupted=0
+    local installer_pid=""
 
-    # SIGINT ловится родительским скриптом.
-    # Foreground installer также получает Ctrl+C.
-    trap 'node_interrupted=1; echo; echo "Получен Ctrl+C — останавливаем установщик Node..."' INT
+    # --------------------------------------------------------
+    # SIGINT
+    # --------------------------------------------------------
 
-    bash "$node_installer" @ install
-    installer_exit=$?
+    trap '
+        node_interrupted=1
+        echo
+        echo "Получен Ctrl+C — останавливаем установщик Node..."
+    ' INT
+
+    # --------------------------------------------------------
+    # Отдельная session/process group
+    # --------------------------------------------------------
+
+    setsid bash "$node_installer" @ install &
+    installer_pid=$!
+
+    # --------------------------------------------------------
+    # Ждём installer
+    # --------------------------------------------------------
+
+    while kill -0 "$installer_pid" 2>/dev/null; do
+
+        if [[ "$node_interrupted" -eq 1 ]]; then
+
+            echo
+            echo "Останавливаем process group установщика..."
+
+            kill -TERM -- "-$installer_pid" 2>/dev/null || true
+
+            sleep 2
+
+            if kill -0 "$installer_pid" 2>/dev/null; then
+
+                echo
+                echo "Процесс не завершился — используем SIGKILL."
+
+                kill -KILL -- "-$installer_pid" 2>/dev/null || true
+            fi
+
+            break
+        fi
+
+        sleep 1
+    done
+
+    # --------------------------------------------------------
+    # Получаем exit code
+    # --------------------------------------------------------
+
+    if [[ "$node_interrupted" -eq 0 ]]; then
+
+        wait "$installer_pid"
+        installer_exit=$?
+
+    else
+
+        wait "$installer_pid" 2>/dev/null || true
+        installer_exit=130
+    fi
 
     trap - INT
 
     rm -f "$node_installer"
 
+    cd /root || true
+
     echo
     echo "Код завершения установщика: $installer_exit"
 
-    # ========================================================
+    # --------------------------------------------------------
     # Ctrl+C
-    # ========================================================
+    # --------------------------------------------------------
 
-    if [[ "$node_interrupted" -eq 1 || "$installer_exit" -eq 130 ]]; then
+    if [[ "$node_interrupted" -eq 1 ||
+          "$installer_exit" -eq 130 ]]; then
 
         echo
-        echo "Установщик Remnawave Node был прерван пользователем."
+        echo "============================================================"
+        echo "УСТАНОВКА NODE ПРЕРВАНА ПОЛЬЗОВАТЕЛЕМ"
+        echo "============================================================"
+
+        # ----------------------------------------------------
+        # Возможно installer уже успел создать Compose
+        # ----------------------------------------------------
 
         if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
             echo
-            echo "Docker Compose найден:"
+            echo "Docker Compose уже существует:"
             echo "$REMNANODE_COMPOSE"
 
-            if ask_yes_no "Продолжить настройку Node"; then
-                :
-            else
+            if (
+                cd "$REMNANODE_DIR" &&
+                docker compose config >/dev/null
+            ); then
+
+                echo
+                echo "Compose configuration OK."
+
+                if [[ "$INSTALL_ZAPRET" == true ]]; then
+
+                    echo
+                    echo "Добавляем Zapret.dat..."
+
+                    configure_remnanode_zapret || true
+                fi
+
+                echo
+                echo "Возвращаемся в главное меню."
+
                 status_skipped "7"
+
                 return 0
             fi
-
-        else
-
-            echo
-            echo "Docker Compose Node не найден."
-
-            status_failed "7"
-            return 1
         fi
 
-    elif [[ "$installer_exit" -ne 0 ]]; then
+        echo
+        echo "Установка Node была прервана."
+        echo "Возвращаемся в главное меню."
+
+        status_skipped "7"
+
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # Installer error
+    # --------------------------------------------------------
+
+    if [[ "$installer_exit" -ne 0 ]]; then
 
         echo
         echo "Установщик Node завершился с ошибкой."
+        echo "Код: $installer_exit"
+
+        # ----------------------------------------------------
+        # Иногда installer возвращает 1,
+        # но Compose уже создан
+        # ----------------------------------------------------
 
         if [[ ! -f "$REMNANODE_COMPOSE" ]]; then
+
             status_failed "7"
+
             return 1
         fi
 
         echo
-        echo "Однако Docker Compose найден."
-        echo "Продолжаем настройку существующей установки."
+        echo "Однако docker-compose.yml существует."
+        echo "Проверяем его..."
 
+        if ! (
+            cd "$REMNANODE_DIR" &&
+            docker compose config >/dev/null
+        ); then
+
+            echo
+            echo "Compose configuration повреждён."
+
+            status_failed "7"
+
+            return 1
+        fi
+
+        echo
+        echo "Compose configuration OK."
+        echo "Продолжаем настройку существующей установки."
     fi
 
-    # ========================================================
-    # Проверка Compose
-    # ========================================================
+    # --------------------------------------------------------
+    # Final Compose validation
+    # --------------------------------------------------------
 
     if [[ ! -f "$REMNANODE_COMPOSE" ]]; then
 
@@ -1060,11 +1376,9 @@ install_remnanode() {
         echo "$REMNANODE_COMPOSE"
 
         status_failed "7"
+
         return 1
     fi
-
-    echo
-    echo "Проверяем Docker Compose..."
 
     if ! (
         cd "$REMNANODE_DIR" &&
@@ -1072,17 +1386,19 @@ install_remnanode() {
     ); then
 
         echo
-        echo "Ошибка в Docker Compose."
+        echo "Ошибка Docker Compose."
 
         status_failed "7"
+
         return 1
     fi
 
+    echo
     echo "Docker Compose configuration OK."
 
-    # ========================================================
-    # ZAPRET
-    # ========================================================
+    # --------------------------------------------------------
+    # Zapret
+    # --------------------------------------------------------
 
     if [[ "$INSTALL_ZAPRET" == true ]]; then
 
@@ -1090,9 +1406,12 @@ install_remnanode() {
         echo "Добавляем Zapret.dat в Node..."
 
         if ! configure_remnanode_zapret; then
+
             echo
             echo "Не удалось добавить Zapret.dat."
+
             status_failed "7"
+
             return 1
         fi
 
@@ -1107,13 +1426,19 @@ install_remnanode() {
 
             echo
             echo "Ошибка перезапуска Node."
+
             status_failed "7"
+
             return 1
         fi
     fi
 
+    # --------------------------------------------------------
+    # Status
+    # --------------------------------------------------------
+
     echo
-    echo "Статус Node:"
+    echo "Текущий статус Node:"
 
     (
         cd "$REMNANODE_DIR" &&
@@ -1121,6 +1446,9 @@ install_remnanode() {
     ) || true
 
     status_ok "7"
+
+    cd /root || true
+
     return 0
 }
 
@@ -1139,6 +1467,7 @@ install_selfsteal() {
 
     selfsteal_installer="$(mktemp /tmp/selfsteal-installer.XXXXXX.sh)"
 
+    echo
     echo "Скачиваем Selfsteal installer..."
 
     if ! curl -fL --retry 3 \
@@ -1149,6 +1478,7 @@ install_selfsteal() {
 
         echo
         echo "Ошибка загрузки selfsteal.sh."
+
         status_failed "8"
         return 1
     fi
@@ -1159,20 +1489,29 @@ install_selfsteal() {
     echo "Запускаем Selfsteal..."
 
     bash "$selfsteal_installer" @ install
+
     local result=$?
 
     rm -f "$selfsteal_installer"
 
+    cd /root || true
+
     if [[ "$result" -eq 0 ]]; then
+
         echo
         echo "Selfsteal установлен."
+
         status_ok "8"
+
         return 0
     fi
 
     echo
-    echo "Selfsteal завершился с ошибкой. Код: $result"
+    echo "Selfsteal завершился с ошибкой."
+    echo "Код: $result"
+
     status_failed "8"
+
     return 1
 }
 
@@ -1190,8 +1529,10 @@ configure_ufw() {
     echo "Устанавливаем UFW..."
 
     if ! apt install -y ufw; then
+
         echo
         echo "Ошибка установки UFW."
+
         status_failed "9"
         return 1
     fi
@@ -1207,17 +1548,21 @@ configure_ufw() {
     echo "Включаем UFW..."
 
     if ! ufw --force enable; then
+
         echo
         echo "Ошибка включения UFW."
+
         status_failed "9"
         return 1
     fi
 
     echo
     echo "Статус UFW:"
+
     ufw status verbose
 
     status_ok "9"
+
     return 0
 }
 
@@ -1235,8 +1580,10 @@ configure_fail2ban() {
     echo "Устанавливаем Fail2ban..."
 
     if ! apt install -y fail2ban; then
+
         echo
         echo "Ошибка установки Fail2ban."
+
         status_failed "10"
         return 1
     fi
@@ -1269,15 +1616,19 @@ EOF
 
         echo
         echo "Jail status:"
+
         fail2ban-client status || true
 
         status_ok "10"
+
         return 0
     fi
 
     echo
     echo "Fail2ban не запущен."
+
     status_failed "10"
+
     return 1
 }
 
@@ -1395,6 +1746,7 @@ install_all() {
 
     echo
     echo "Установка завершена."
+    echo
     echo "Лог:"
     echo "$LOG_FILE"
     echo
