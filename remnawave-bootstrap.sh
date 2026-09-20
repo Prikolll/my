@@ -215,20 +215,64 @@ status_text() {
 # Table formatting helpers
 # ============================================================
 
+pad_to_width() {
+    local text="$1"
+    local target_width="$2"
+    local visible_width=${#text}
+    local padding=$((target_width - visible_width))
+
+    if [[ $padding -gt 0 ]]; then
+        printf "%s%*s" "$text" "$padding" ""
+    else
+        printf "%s" "$text"
+    fi
+}
+
 print_table_header() {
-    printf "%-4s │ %-55s │ %-8s\n" "#" "Задача" "Статус"
-    printf "─────┼───────────────────────────────────────────────────────┼────────\n"
+    local col1_width=4
+    local col2_width=55
+    local col3_width=8
+
+    printf "%s │ %s │ %s\n" \
+        "$(pad_to_width "#" $col1_width)" \
+        "$(pad_to_width "Задача" $col2_width)" \
+        "$(pad_to_width "Статус" $col3_width)"
+
+    printf "%s┼%s┼%s\n" \
+        "$(printf '%*s' $((col1_width + 1)) '' | tr ' ' '─')" \
+        "$(printf '%*s' $((col2_width + 2)) '' | tr ' ' '─')" \
+        "$(printf '%*s' $((col3_width + 1)) '' | tr ' ' '─')"
 }
 
 print_table_row() {
     local num="$1"
     local task="$2"
     local status="$3"
-    local colored_status
 
+    local col1_width=4
+    local col2_width=55
+    local col3_width=8
+
+    printf "%s │ %s │ " \
+        "$(pad_to_width "$num" $col1_width)" \
+        "$(pad_to_width "$task" $col2_width)"
+
+    local status_plain
+    case "$status" in
+        OK) status_plain="OK" ;;
+        FAILED) status_plain="FAILED" ;;
+        SKIPPED) status_plain="SKIPPED" ;;
+        RUNNING) status_plain="RUNNING" ;;
+        *) status_plain="$status" ;;
+    esac
+
+    local colored_status
     colored_status=$(status_text "$status")
 
-    printf "%-4s │ %-55s │ %s\n" "$num" "$task" "$colored_status"
+    local visible_width=${#status_plain}
+    local padding=$((col3_width - visible_width))
+
+    printf "%s%*s\n" "$colored_status" "$padding" ""
 }
 
 # ============================================================
@@ -258,6 +302,10 @@ disable_fwupd() {
 
     systemctl daemon-reload
 
+    # --------------------------------------------------------
+    # Проверяем реальное состояние
+    # --------------------------------------------------------
+
     local fwupd_masked="no"
     local refresh_masked="no"
     local fwupd_active="no"
@@ -279,6 +327,10 @@ disable_fwupd() {
         refresh_active="yes"
     fi
 
+    # --------------------------------------------------------
+    # Если systemd не показывает masked — создаём маску вручную
+    # --------------------------------------------------------
+
     if [[ "$fwupd_masked" != "yes" ]]; then
 
         rm -f /etc/systemd/system/fwupd.service
@@ -298,6 +350,10 @@ disable_fwupd() {
         systemctl daemon-reload
 
     fi
+
+    # --------------------------------------------------------
+    # Финальная проверка
+    # --------------------------------------------------------
 
     fwupd_masked="no"
     refresh_masked="no"
@@ -621,6 +677,10 @@ install_zapret() {
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
 
+    # ========================================================
+    # Docker Compose
+    # ========================================================
+
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
         echo
@@ -643,9 +703,17 @@ lines = compose.read_text().splitlines()
 
 mount = "/opt/remnanode/xray/share/zapret.dat:/usr/local/bin/zapret.dat:ro"
 
+# ------------------------------------------------------------
+# Already exists
+# ------------------------------------------------------------
+
 if any(mount in line for line in lines):
     print("Volume zapret.dat уже присутствует.")
     sys.exit(0)
+
+# ------------------------------------------------------------
+# Find remnanode service
+# ------------------------------------------------------------
 
 service_index = None
 service_indent = None
@@ -663,6 +731,10 @@ if service_index is None:
     print("Не найден сервис remnanode в compose.")
     sys.exit(2)
 
+# ------------------------------------------------------------
+# Find end of service
+# ------------------------------------------------------------
+
 service_end = len(lines)
 
 for i in range(service_index + 1, len(lines)):
@@ -678,6 +750,10 @@ for i in range(service_index + 1, len(lines)):
         service_end = i
         break
 
+# ------------------------------------------------------------
+# Find volumes
+# ------------------------------------------------------------
+
 volumes_index = None
 
 for i in range(service_index + 1, service_end):
@@ -692,6 +768,10 @@ for i in range(service_index + 1, service_end):
     if indent == service_indent + 2 and line.strip() == "volumes:":
         volumes_index = i
         break
+
+# ------------------------------------------------------------
+# Add mount
+# ------------------------------------------------------------
 
 if volumes_index is not None:
 
@@ -862,6 +942,10 @@ install_warp() {
     tmp1=$(mktemp -d)
     tmp2=$(mktemp -d)
 
+    # ========================================================
+    # WARP 1
+    # ========================================================
+
     msg_step "Создание WARP профиля 1"
 
     cd "$tmp1" || {
@@ -935,6 +1019,10 @@ install_warp() {
     fi
 
     cp wgcf-profile.conf "$WARP1_CONF"
+
+    # ========================================================
+    # WARP 2
+    # ========================================================
 
     msg_step "Создание WARP профиля 2"
 
@@ -1015,6 +1103,10 @@ install_warp() {
 
     rm -rf "$tmp1" "$tmp2"
 
+    # ========================================================
+    # WARP 1 configuration
+    # ========================================================
+
     msg_info "Настройка WARP 1..."
 
     if [[ ! -f "$WARP1_CONF" ]]; then
@@ -1047,6 +1139,10 @@ install_warp() {
 
     sed -i '/^AllowedIPs = /d' "$WARP1_CONF"
     sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP1_CONF"
+
+    # ========================================================
+    # WARP 2 configuration
+    # ========================================================
 
     msg_info "Настройка WARP 2..."
 
@@ -1083,6 +1179,10 @@ install_warp() {
 
     chmod 600 "$WARP1_CONF" "$WARP2_CONF"
 
+    # ========================================================
+    # WARP startup script
+    # ========================================================
+
     msg_info "Создание WARP startup script..."
 
     cat > "$WARP_START" <<'EOF'
@@ -1098,6 +1198,10 @@ wg-quick up wgcf2
 EOF
 
     chmod +x "$WARP_START"
+
+    # ========================================================
+    # systemd service
+    # ========================================================
 
     msg_info "Создание systemd сервиса..."
 
@@ -1340,6 +1444,7 @@ install_remnanode() {
         return
     fi
 
+    # Fix CRLF
     sed -i 's/\r$//' "$node_installer"
 
     chmod +x "$node_installer"
@@ -1347,6 +1452,9 @@ install_remnanode() {
     echo
     msg_info "Запуск RemnaNode installer..."
     echo
+
+    # Настоящий терминал.
+    # Автоматически отправляем 'y' на первый вопрос, затем передаём управление в /dev/tty.
 
     { echo "y"; cat /dev/tty; } | bash "$node_installer" @ install \
         >/dev/tty \
@@ -1402,6 +1510,7 @@ install_selfsteal() {
         return
     fi
 
+    # Fix CRLF
     sed -i 's/\r$//' "$selfsteal_installer"
 
     chmod +x "$selfsteal_installer"
@@ -1409,6 +1518,9 @@ install_selfsteal() {
     echo
     msg_info "Запуск Selfsteal installer..."
     echo
+
+    # Настоящий терминал.
+    # Автоматических ответов на вопросы установщика нет.
 
     bash "$selfsteal_installer" \
         </dev/tty \
@@ -1495,6 +1607,10 @@ install_1_to_9() {
 
     STATUS[11]="RUNNING"
 
+    # ========================================================
+    # Ask before Zapret
+    # ========================================================
+
     local run_zapret="no"
 
     if ask_yes_no "Установить Zapret.dat?"; then
@@ -1502,6 +1618,10 @@ install_1_to_9() {
     fi
 
     echo
+
+    # ========================================================
+    # Ask before WARP
+    # ========================================================
 
     local run_warp="no"
 
@@ -1511,6 +1631,10 @@ install_1_to_9() {
 
     echo
 
+    # ========================================================
+    # Ask before UFW
+    # ========================================================
+
     local run_ufw="no"
 
     if ask_yes_no "Настроить UFW?"; then
@@ -1519,21 +1643,41 @@ install_1_to_9() {
 
     echo
 
+    # ========================================================
+    # 1
+    # ========================================================
+
     disable_fwupd
 
     msg_step "Переход к пункту 2"
+
+    # ========================================================
+    # 2
+    # ========================================================
 
     apt_update_show_upgrades
 
     msg_step "Переход к пункту 3"
 
+    # ========================================================
+    # 3
+    # ========================================================
+
     disable_ipv6
 
     msg_step "Переход к пункту 4"
 
+    # ========================================================
+    # 4
+    # ========================================================
+
     configure_bbr
 
     msg_step "Переход к пункту 5"
+
+    # ========================================================
+    # 5
+    # ========================================================
 
     if [[ "$run_zapret" == "yes" ]]; then
 
@@ -1548,8 +1692,13 @@ install_1_to_9() {
 
     msg_step "Переход к пункту 6"
 
+    # ========================================================
+    # 6
+    # ========================================================
+
     if [[ "$run_warp" == "yes" ]]; then
 
+        # Через пункт 11 TOS принимается автоматически.
         install_warp yes
 
     else
@@ -1560,6 +1709,10 @@ install_1_to_9() {
     fi
 
     msg_step "Переход к пункту 7"
+
+    # ========================================================
+    # 7
+    # ========================================================
 
     if [[ "$run_ufw" == "yes" ]]; then
 
@@ -1574,7 +1727,15 @@ install_1_to_9() {
 
     msg_step "Переход к пункту 8"
 
+    # ========================================================
+    # 8
+    # ========================================================
+
     install_fail2ban
+
+    # ========================================================
+    # Report 1-8
+    # ========================================================
 
     show_report_1_to_8
 
@@ -1582,9 +1743,17 @@ install_1_to_9() {
     msg_info "Переход к установке RemnaNode..."
     echo
 
+    # ========================================================
+    # 9
+    # ========================================================
+
     install_remnanode
 
     STATUS[11]="OK"
+
+    # ========================================================
+    # Final report
+    # ========================================================
 
     show_final_report
 
@@ -1592,6 +1761,7 @@ install_1_to_9() {
     msg_ok "Установка 1-9 завершена."
     echo
 
+    # Не возвращаемся в меню.
     exit 0
 }
 
