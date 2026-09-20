@@ -378,15 +378,9 @@ for i in range(service_start + 1, service_end):
         break
 
 if volumes_line is not None:
-
-    insert_at = volumes_line + 1
-    lines.insert(insert_at, mount)
-
+    lines.insert(volumes_line + 1, mount)
 else:
-
-    insert_at = service_end
-
-    lines[insert_at:insert_at] = [
+    lines[service_end:service_end] = [
         "    volumes:",
         mount,
     ]
@@ -395,9 +389,7 @@ compose.write_text("\n".join(lines) + "\n")
 PY
     then
         print_error "Не удалось изменить docker-compose.yml."
-
         cp -a "$backup" "$REMNANODE_COMPOSE"
-
         return 1
     fi
 
@@ -506,23 +498,11 @@ install_zapret() {
 
     INSTALL_ZAPRET=true
 
-    # ========================================================
-    # Если Node уже установлен
-    # ========================================================
-
+    # Если Node уже есть — сразу подключаем Zapret.
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
         echo
-        print_info "Обнаружен существующий Remnawave Node."
-
-        if ! (cd "$REMNANODE_DIR" && docker compose config >/dev/null 2>&1); then
-
-            print_error "Существующий docker-compose.yml невалиден."
-            status_failed "5"
-            return 1
-        fi
-
-        print_info "Добавляем Zapret в существующий Compose."
+        print_info "Найден существующий docker-compose.yml."
 
         if ! configure_remnanode_zapret; then
 
@@ -540,16 +520,12 @@ install_zapret() {
 
         print_ok "Zapret подключён к существующему Node."
 
-        status_ok "5"
-        return 0
+    else
+
+        echo
+        print_info "Node ещё не установлен."
+        print_info "Zapret будет подключён после установки Node."
     fi
-
-    # ========================================================
-    # Node ещё НЕ установлен
-    # ========================================================
-
-    print_info "Docker Compose Node ещё не существует."
-    print_info "Zapret сохранён и будет подключён после установки Node."
 
     status_ok "5"
     return 0
@@ -580,19 +556,13 @@ address = sys.argv[2]
 
 lines = file.read_text().splitlines()
 
-# ------------------------------------------------------------
 # Remove Address
-# ------------------------------------------------------------
-
 lines = [
     line for line in lines
     if not line.strip().startswith("Address =")
 ]
 
-# ------------------------------------------------------------
 # Insert IPv4 Address after [Interface]
-# ------------------------------------------------------------
-
 interface_index = None
 
 for i, line in enumerate(lines):
@@ -609,10 +579,7 @@ lines.insert(
     f"Address = {address}"
 )
 
-# ------------------------------------------------------------
-# IPv4 only AllowedIPs
-# ------------------------------------------------------------
-
+# IPv4-only AllowedIPs
 new = []
 
 for line in lines:
@@ -637,10 +604,7 @@ for line in lines:
 
 lines = new
 
-# ------------------------------------------------------------
 # Remove IPv6 Endpoint
-# ------------------------------------------------------------
-
 new = []
 
 for line in lines:
@@ -656,19 +620,13 @@ for line in lines:
 
 lines = new
 
-# ------------------------------------------------------------
-# Remove Table
-# ------------------------------------------------------------
-
+# Remove existing Table
 lines = [
     line for line in lines
     if not line.strip().startswith("Table =")
 ]
 
-# ------------------------------------------------------------
-# Table = off immediately after MTU
-# ------------------------------------------------------------
-
+# Table = off after MTU
 mtu_index = None
 
 for i, line in enumerate(lines):
@@ -686,19 +644,13 @@ lines.insert(
     "Table = off"
 )
 
-# ------------------------------------------------------------
 # Remove existing PersistentKeepalive
-# ------------------------------------------------------------
-
 lines = [
     line for line in lines
     if not line.strip().startswith("PersistentKeepalive =")
 ]
 
-# ------------------------------------------------------------
 # Add PersistentKeepalive after endpoint
-# ------------------------------------------------------------
-
 endpoint_index = None
 
 for i, line in enumerate(lines):
@@ -760,7 +712,6 @@ install_warp() {
     fi
 
     chmod +x wgcf
-
     install -m 755 wgcf /usr/local/bin/wgcf
 
     rm -rf "$tmpdir"
@@ -963,124 +914,15 @@ install_remnanode() {
     echo "============================================================"
 
     # ========================================================
-    # ВАЖНО:
+    # НИКАКИХ ПРОВЕРОК СУЩЕСТВОВАНИЯ NODE ЗДЕСЬ НЕТ.
     #
-    # /opt/remnanode НЕ является признаком установленного Node.
+    # Даже если:
     #
-    # Zapret сам создаёт:
-    # /opt/remnanode/xray/share/
+    # /opt/remnanode/
+    # /opt/remnanode/xray/
+    # /opt/remnanode/docker-compose.yml
     #
-    # Поэтому проверяем ТОЛЬКО docker-compose.yml.
-    # ========================================================
-
-    if [[ -f "$REMNANODE_COMPOSE" ]]; then
-
-        echo
-        print_info "Найден существующий:"
-        echo "$REMNANODE_COMPOSE"
-
-        # ----------------------------------------------------
-        # Проверяем существующий Compose
-        # ----------------------------------------------------
-
-        if command -v docker >/dev/null 2>&1; then
-
-            if (cd "$REMNANODE_DIR" && docker compose config >/dev/null 2>&1); then
-
-                print_ok "Существующий Remnawave Node обнаружен."
-                print_ok "Повторно remnanode.sh запускать не будем."
-
-                # ------------------------------------------------
-                # Если выбран Zapret
-                # ------------------------------------------------
-
-                if [[ "$INSTALL_ZAPRET" == "true" ]]; then
-
-                    echo
-                    print_info "Zapret выбран."
-                    print_info "Проверяем mount в существующем Compose."
-
-                    if ! configure_remnanode_zapret; then
-
-                        print_error "Не удалось подключить Zapret."
-
-                        status_failed "7"
-                        return 1
-                    fi
-
-                    if ! restart_remnanode; then
-
-                        print_error "Не удалось перезапустить Node."
-
-                        status_failed "7"
-                        return 1
-                    fi
-
-                else
-
-                    echo
-                    print_info "Текущий статус Node:"
-
-                    (
-                        cd "$REMNANODE_DIR" &&
-                        docker compose ps
-                    ) || true
-                fi
-
-                print_ok "Используется существующая установка Node."
-
-                status_ok "7"
-                return 0
-
-            else
-
-                print_error "docker-compose.yml существует, но невалиден."
-
-                echo
-                echo "Проверка:"
-                echo "  cd $REMNANODE_DIR"
-                echo "  docker compose config"
-                echo
-
-                print_error "Повторную установку поверх него не выполняем."
-
-                status_failed "7"
-                return 1
-            fi
-        fi
-
-        print_error "Docker не найден, хотя docker-compose.yml существует."
-
-        status_failed "7"
-        return 1
-    fi
-
-
-    # ========================================================
-    # НОВАЯ УСТАНОВКА
-    #
-    # Здесь может уже существовать:
-    #
-    # /opt/remnanode/xray/share/zapret.dat
-    #
-    # Это НОРМАЛЬНО.
-    #
-    # Пока docker-compose.yml нет — Node считаем
-    # неустановленным.
-    # ========================================================
-
-    if [[ -d "$REMNANODE_DIR" ]]; then
-
-        print_info "Каталог $REMNANODE_DIR уже существует."
-
-        print_info "Это может быть каталог, созданный Zapret."
-        print_info "docker-compose.yml не найден."
-        print_info "Продолжаем установку Remnawave Node."
-    fi
-
-
-    # ========================================================
-    # Download installer
+    # уже существуют — installer всё равно запускается.
     # ========================================================
 
     apt install -y curl ca-certificates
@@ -1105,13 +947,8 @@ install_remnanode() {
 
     chmod +x "$node_installer"
 
-    # Удаляем CRLF
+    # Убираем CRLF
     sed -i 's/\r$//' "$node_installer"
-
-
-    # ========================================================
-    # Run installer
-    # ========================================================
 
     echo
     echo "Запускаем установщик Remnawave Node."
@@ -1124,8 +961,6 @@ install_remnanode() {
 
     local installer_pid
     local node_interrupted=0
-
-    trap 'node_interrupted=1' INT
 
     # Отдельная process group
     setsid bash "$node_installer" @ install &
@@ -1184,23 +1019,61 @@ install_remnanode() {
 
 
     # ========================================================
-    # Проверяем результат
+    # Успешное завершение
+    # ========================================================
+
+    if [[ "$installer_rc" -eq 0 ]]; then
+
+        print_ok "Установщик Remnawave Node завершился успешно."
+
+        # ----------------------------------------------------
+        # Zapret
+        # ----------------------------------------------------
+
+        if [[ "$INSTALL_ZAPRET" == "true" ]]; then
+
+            echo
+            print_info "Подключаем Zapret.dat к Remnawave Node..."
+
+            if ! configure_remnanode_zapret; then
+
+                print_error "Не удалось подключить Zapret."
+
+                status_failed "7"
+                return 1
+            fi
+
+            if ! restart_remnanode; then
+
+                print_error "Не удалось перезапустить Node."
+
+                status_failed "7"
+                return 1
+            fi
+        fi
+
+        status_ok "7"
+        return 0
+    fi
+
+
+    # ========================================================
+    # Installer может вернуть 1, но реально создать Node
     # ========================================================
 
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
+        print_warn "Установщик вернул код $installer_rc,"
+        print_warn "но docker-compose.yml существует."
+
         if (cd "$REMNANODE_DIR" && docker compose config >/dev/null 2>&1); then
 
-            print_ok "Remnawave Node успешно установлен."
-
-            # ------------------------------------------------
-            # Подключаем Zapret
-            # ------------------------------------------------
+            print_ok "Docker Compose Node валиден."
 
             if [[ "$INSTALL_ZAPRET" == "true" ]]; then
 
                 echo
-                print_info "Подключаем Zapret.dat к Node..."
+                print_info "Подключаем Zapret.dat..."
 
                 if ! configure_remnanode_zapret; then
 
@@ -1226,36 +1099,11 @@ install_remnanode() {
 
 
     # ========================================================
-    # Если установщик вернул ошибку, но контейнер появился
-    # ========================================================
-
-    if command -v docker >/dev/null 2>&1; then
-
-        if docker ps -a --format '{{.Names}}' |
-            grep -Eq '^remnanode$|^remnawave-node$'; then
-
-            print_ok "Контейнер Remnawave обнаружен."
-
-            status_ok "7"
-            return 0
-        fi
-    fi
-
-
-    # ========================================================
     # Реальная ошибка
     # ========================================================
 
-    if [[ "$installer_rc" -ne 0 ]]; then
-
-        print_error "Установщик Node завершился с ошибкой."
-        print_error "Код: $installer_rc"
-
-        status_failed "7"
-        return 1
-    fi
-
-    print_error "Установщик завершился, но установка Node не обнаружена."
+    print_error "Установщик Node завершился с ошибкой."
+    print_error "Код: $installer_rc"
 
     status_failed "7"
     return 1
@@ -1497,10 +1345,6 @@ install_all() {
     echo "11. Установка всего"
     echo "============================================================"
 
-    # --------------------------------------------------------
-    # Zapret
-    # --------------------------------------------------------
-
     echo
     read -r -p "Установить Zapret.dat? [y/n]: " answer
 
@@ -1517,10 +1361,6 @@ install_all() {
     esac
 
 
-    # --------------------------------------------------------
-    # WARP
-    # --------------------------------------------------------
-
     echo
     read -r -p "Установить два WARP профиля? [y/n]: " answer
 
@@ -1536,10 +1376,6 @@ install_all() {
             ;;
     esac
 
-
-    # --------------------------------------------------------
-    # Selfsteal
-    # --------------------------------------------------------
 
     echo
     read -r -p "Установить Selfsteal? [y/n]: " answer
@@ -1562,85 +1398,38 @@ install_all() {
     echo
 
 
-    # --------------------------------------------------------
-    # 1
-    # --------------------------------------------------------
-
     install_fwupd || true
-
-
-    # --------------------------------------------------------
-    # 2
-    # --------------------------------------------------------
 
     install_updates || true
 
-
-    # --------------------------------------------------------
-    # 3
-    # --------------------------------------------------------
-
     disable_ipv6 || true
-
-
-    # --------------------------------------------------------
-    # 4
-    # --------------------------------------------------------
 
     configure_bbr || true
 
-
-    # --------------------------------------------------------
-    # 5
-    # --------------------------------------------------------
 
     if [[ "$INSTALL_ZAPRET" == "true" ]]; then
         install_zapret || true
     fi
 
 
-    # --------------------------------------------------------
-    # 6
-    # --------------------------------------------------------
-
     if [[ "$INSTALL_WARP" == "true" ]]; then
         install_warp || true
     fi
 
 
-    # --------------------------------------------------------
-    # 7
-    # --------------------------------------------------------
-
+    # ВСЕГДА запускаем установщик Node
     install_remnanode || true
 
-
-    # --------------------------------------------------------
-    # 8
-    # --------------------------------------------------------
 
     if [[ "$INSTALL_SELFSTEAL" == "true" ]]; then
         install_selfsteal || true
     fi
 
 
-    # --------------------------------------------------------
-    # 9
-    # --------------------------------------------------------
-
     configure_ufw || true
-
-
-    # --------------------------------------------------------
-    # 10
-    # --------------------------------------------------------
 
     configure_fail2ban || true
 
-
-    # --------------------------------------------------------
-    # Final status
-    # --------------------------------------------------------
 
     print_status
 }
