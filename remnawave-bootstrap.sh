@@ -379,14 +379,20 @@ if service_index is None:
     print("Не найден service remnanode.")
     sys.exit(1)
 
-service_indent = len(lines[service_index]) - len(lines[service_index].lstrip())
+service_indent = (
+    len(lines[service_index])
+    - len(lines[service_index].lstrip())
+)
 
 volumes_index = None
 
 for i in range(service_index + 1, len(lines)):
     stripped = lines[i].strip()
 
-    if stripped and len(lines[i]) - len(lines[i].lstrip()) <= service_indent:
+    if stripped and (
+        len(lines[i]) - len(lines[i].lstrip())
+        <= service_indent
+    ):
         break
 
     if stripped == "volumes:":
@@ -395,6 +401,7 @@ for i in range(service_index + 1, len(lines)):
 
 if volumes_index is not None:
     insert_at = volumes_index + 1
+
     volume_indent = (
         len(lines[volumes_index])
         - len(lines[volumes_index].lstrip())
@@ -456,8 +463,6 @@ install_zapret() {
     echo "Zapret.dat установлен:"
     ls -lh "$ZAPRET_FILE"
 
-    # Zapret сам может создать /opt/remnanode.
-    # Поэтому проверяем именно docker-compose.yml.
     if [[ ! -f "$REMNANODE_COMPOSE" ]]; then
         echo
         echo "RemnaNode пока не установлен."
@@ -469,6 +474,7 @@ install_zapret() {
     fi
 
     local backup
+
     backup="${REMNANODE_COMPOSE}.backup.$(date +%Y%m%d-%H%M%S)"
 
     cp -a "$REMNANODE_COMPOSE" "$backup"
@@ -479,7 +485,9 @@ install_zapret() {
 
     if ! add_zapret_mount "$REMNANODE_COMPOSE"; then
         echo "Ошибка добавления mount."
+
         cp -a "$backup" "$REMNANODE_COMPOSE"
+
         STATUS[5]="FAILED"
         return 1
     fi
@@ -487,9 +495,14 @@ install_zapret() {
     echo
     echo "Проверка Docker Compose..."
 
-    if ! docker compose -f "$REMNANODE_COMPOSE" config >/dev/null; then
+    if ! docker compose \
+        -f "$REMNANODE_COMPOSE" \
+        config >/dev/null; then
+
         echo "Ошибка docker compose config."
+
         cp -a "$backup" "$REMNANODE_COMPOSE"
+
         STATUS[5]="FAILED"
         return 1
     fi
@@ -499,8 +512,13 @@ install_zapret() {
     echo
     echo "Перезапуск RemnaNode..."
 
-    docker compose -f "$REMNANODE_COMPOSE" down
-    docker compose -f "$REMNANODE_COMPOSE" up -d
+    docker compose \
+        -f "$REMNANODE_COMPOSE" \
+        down
+
+    docker compose \
+        -f "$REMNANODE_COMPOSE" \
+        up -d
 
     STATUS[5]="OK"
 
@@ -516,23 +534,35 @@ prepare_wgcf_config() {
     local file="$1"
     local address="$2"
 
-    sed -i '/^Address =/c\Address = '"$address" "$file"
+    sed -i \
+        '/^Address =/c\Address = '"$address" \
+        "$file"
 
     sed -i '/^Table =/d' "$file"
 
-    sed -i '/^MTU =/a Table = off' "$file"
+    sed -i \
+        '/^MTU =/a Table = off' \
+        "$file"
 
-    sed -i '/^PersistentKeepalive =/d' "$file"
+    sed -i \
+        '/^PersistentKeepalive =/d' \
+        "$file"
 
     sed -i \
         '/^Endpoint = engage.cloudflareclient.com:2408/a PersistentKeepalive = 25' \
         "$file"
 
-    sed -i '/^Address =/s/,[^ ]*//g' "$file"
+    sed -i \
+        '/^Address =/s/,[^ ]*//g' \
+        "$file"
 
-    sed -i '/^AllowedIPs =/c\AllowedIPs = 0.0.0.0/0' "$file"
+    sed -i \
+        '/^AllowedIPs =/c\AllowedIPs = 0.0.0.0/0' \
+        "$file"
 
-    sed -i '/Endpoint = .*]:2408/d' "$file"
+    sed -i \
+        '/Endpoint = .*]:2408/d' \
+        "$file"
 }
 
 install_warp() {
@@ -574,7 +604,9 @@ install_warp() {
         wgcf register --accept-tos
         wgcf generate
     ); then
+
         rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return 1
     fi
@@ -587,7 +619,9 @@ install_warp() {
         wgcf register --accept-tos
         wgcf generate
     ); then
+
         rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return 1
     fi
@@ -598,10 +632,17 @@ install_warp() {
     cp "$tmp1/wgcf-profile.conf" "$WARP1_CONF"
     cp "$tmp2/wgcf-profile.conf" "$WARP2_CONF"
 
-    prepare_wgcf_config "$WARP1_CONF" "172.16.0.2/32"
-    prepare_wgcf_config "$WARP2_CONF" "172.16.0.3/32"
+    prepare_wgcf_config \
+        "$WARP1_CONF" \
+        "172.16.0.2/32"
 
-    chmod 600 "$WARP1_CONF" "$WARP2_CONF"
+    prepare_wgcf_config \
+        "$WARP2_CONF" \
+        "172.16.0.3/32"
+
+    chmod 600 \
+        "$WARP1_CONF" \
+        "$WARP2_CONF"
 
     rm -rf "$tmp1" "$tmp2"
 
@@ -718,13 +759,11 @@ install_remnanode() {
         rm -f "$node_installer"
 
         STATUS[7]="FAILED"
-
         return 1
     fi
 
     chmod +x "$node_installer"
 
-    # Убираем CRLF, если файл имеет Windows окончания строк.
     sed -i 's/\r$//' "$node_installer"
 
     echo
@@ -732,19 +771,6 @@ install_remnanode() {
     echo "Запуск интерактивного установщика RemnaNode"
     echo "============================================================"
     echo
-
-    # ========================================================
-    # КРИТИЧЕСКИ ВАЖНО:
-    #
-    # Установщик получает настоящий терминал.
-    #
-    # Никаких:
-    #   printf "y"
-    #   yes
-    #   echo y
-    #
-    # Все ответы вводит пользователь вручную.
-    # ========================================================
 
     bash "$node_installer" @ install \
         </dev/tty \
@@ -812,13 +838,11 @@ install_selfsteal() {
         rm -f "$selfsteal_installer"
 
         STATUS[8]="FAILED"
-
         return 1
     fi
 
     chmod +x "$selfsteal_installer"
 
-    # Убираем CRLF.
     sed -i 's/\r$//' "$selfsteal_installer"
 
     echo
@@ -827,7 +851,6 @@ install_selfsteal() {
     echo "============================================================"
     echo
 
-    # Полностью интерактивный запуск через настоящий терминал.
     bash "$selfsteal_installer" @ install \
         </dev/tty \
         >/dev/tty \
@@ -1013,127 +1036,7 @@ show_status() {
 }
 
 # ============================================================
-# 11. Install everything
-# ============================================================
-
-install_everything() {
-    echo
-    echo "============================================================"
-    echo "11. Установка всего"
-    echo "============================================================"
-
-    echo
-    echo "Будут выполнены пункты 1–10."
-    echo
-
-    local install_zapret_choice="n"
-    local install_warp_choice="n"
-    local install_selfsteal_choice="n"
-
-    if ask_yes_no "Установить Zapret.dat?"; then
-        install_zapret_choice="y"
-    fi
-
-    if ask_yes_no "Установить два WARP профиля?"; then
-        install_warp_choice="y"
-    fi
-
-    if ask_yes_no "Установить Selfsteal?"; then
-        install_selfsteal_choice="y"
-    fi
-
-    echo
-    echo "============================================================"
-    echo "Начинаем установку"
-    echo "============================================================"
-
-    echo
-    echo ">>> 1. fwupd"
-    disable_fwupd || true
-
-    echo
-    echo ">>> 2. APT"
-    update_apt || true
-
-    echo
-    echo ">>> 3. IPv6"
-    disable_ipv6 || true
-
-    echo
-    echo ">>> 4. BBR"
-    configure_bbr || true
-
-    if [[ "$install_zapret_choice" == "y" ]]; then
-
-        echo
-        echo ">>> 5. Zapret.dat"
-
-        install_zapret || true
-
-    else
-
-        STATUS[5]="SKIPPED"
-
-        echo
-        echo ">>> 5. Zapret.dat — пропущено"
-
-    fi
-
-    if [[ "$install_warp_choice" == "y" ]]; then
-
-        echo
-        echo ">>> 6. WARP"
-
-        install_warp || true
-
-    else
-
-        STATUS[6]="SKIPPED"
-
-        echo
-        echo ">>> 6. WARP — пропущено"
-
-    fi
-
-    echo
-    echo ">>> 7. RemnaNode"
-
-    install_remnanode || true
-
-    if [[ "$install_selfsteal_choice" == "y" ]]; then
-
-        echo
-        echo ">>> 8. Selfsteal"
-
-        install_selfsteal || true
-
-    else
-
-        STATUS[8]="SKIPPED"
-
-        echo
-        echo ">>> 8. Selfsteal — пропущено"
-
-    fi
-
-    echo
-    echo ">>> 9. UFW"
-
-    configure_ufw || true
-
-    echo
-    echo ">>> 10. Fail2ban"
-
-    configure_fail2ban || true
-
-    show_status
-
-    echo
-    echo "Установка всего завершена."
-}
-
-# ============================================================
-# Menu
+# Main menu
 # ============================================================
 
 show_menu() {
@@ -1153,7 +1056,6 @@ show_menu() {
     echo " 8. Установить Selfsteal"
     echo " 9. Настроить UFW"
     echo "10. Установить и настроить Fail2ban"
-    echo "11. Установить ВСЁ"
     echo
     echo " 0. Выход"
     echo
@@ -1222,11 +1124,6 @@ while true; do
 
         10)
             configure_fail2ban || true
-            pause_menu
-            ;;
-
-        11)
-            install_everything
             pause_menu
             ;;
 
