@@ -85,6 +85,7 @@ require_root() {
 # ============================================================
 
 install_fwupd() {
+
     echo
     echo "============================================================"
     echo "1. Отключение fwupd"
@@ -111,6 +112,7 @@ install_fwupd() {
     fi
 
     if [[ "$target" != "/dev/null" ]]; then
+
         print_warn "Маска fwupd не установлена. Создаём её вручную."
 
         rm -f "/etc/systemd/system/$service"
@@ -149,6 +151,7 @@ install_fwupd() {
 # ============================================================
 
 install_updates() {
+
     echo
     echo "============================================================"
     echo "2. apt update + список обновлений"
@@ -178,6 +181,7 @@ install_updates() {
 # ============================================================
 
 disable_ipv6() {
+
     echo
     echo "============================================================"
     echo "3. Отключение IPv6"
@@ -206,6 +210,7 @@ EOF
 # ============================================================
 
 configure_bbr() {
+
     echo
     echo "============================================================"
     echo "4. BBR / сетевые параметры"
@@ -388,6 +393,7 @@ else:
 compose.write_text("\n".join(lines) + "\n")
 PY
     then
+
         print_error "Не удалось изменить docker-compose.yml."
         cp -a "$backup" "$REMNANODE_COMPOSE"
         return 1
@@ -716,6 +722,7 @@ install_warp() {
 
     rm -rf "$tmpdir"
 
+
     # ========================================================
     # WARP 1
     # ========================================================
@@ -913,18 +920,6 @@ install_remnanode() {
     echo "7. Установка Remnawave Node"
     echo "============================================================"
 
-    # ========================================================
-    # НИКАКИХ ПРОВЕРОК СУЩЕСТВОВАНИЯ NODE ЗДЕСЬ НЕТ.
-    #
-    # Даже если:
-    #
-    # /opt/remnanode/
-    # /opt/remnanode/xray/
-    # /opt/remnanode/docker-compose.yml
-    #
-    # уже существуют — installer всё равно запускается.
-    # ========================================================
-
     apt install -y curl ca-certificates
 
     local node_installer
@@ -947,11 +942,14 @@ install_remnanode() {
 
     chmod +x "$node_installer"
 
-    # Убираем CRLF
+    # Убираем CRLF, если они присутствуют
     sed -i 's/\r$//' "$node_installer"
 
     echo
     echo "Запускаем установщик Remnawave Node."
+    echo
+    echo "Если Node уже установлен, будет автоматически"
+    echo "подтверждена переустановка через ответ: y"
     echo
     echo "Если установка зависнет — нажмите Ctrl+C."
     echo
@@ -962,8 +960,21 @@ install_remnanode() {
     local installer_pid
     local node_interrupted=0
 
-    # Отдельная process group
-    setsid bash "$node_installer" @ install &
+    trap 'node_interrupted=1' INT
+
+    # --------------------------------------------------------
+    # ВАЖНО:
+    #
+    # Установщик сам спрашивает:
+    #
+    # Do you want to override the previous installation? (y/n)
+    #
+    # Поэтому передаём ему "y".
+    #
+    # /opt/remnanode НЕ удаляем.
+    # --------------------------------------------------------
+
+    setsid bash -c 'printf "y\n" | bash "$1" @ install' _ "$node_installer" &
     installer_pid=$!
 
     while kill -0 "$installer_pid" 2>/dev/null; do
@@ -1019,7 +1030,7 @@ install_remnanode() {
 
 
     # ========================================================
-    # Успешное завершение
+    # SUCCESS
     # ========================================================
 
     if [[ "$installer_rc" -eq 0 ]]; then
@@ -1045,7 +1056,7 @@ install_remnanode() {
 
             if ! restart_remnanode; then
 
-                print_error "Не удалось перезапустить Node."
+                print_error "Не удалось перезапустить Remnawave Node."
 
                 status_failed "7"
                 return 1
@@ -1058,7 +1069,7 @@ install_remnanode() {
 
 
     # ========================================================
-    # Installer может вернуть 1, но реально создать Node
+    # Installer returned error, but Node may exist
     # ========================================================
 
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
@@ -1099,7 +1110,7 @@ install_remnanode() {
 
 
     # ========================================================
-    # Реальная ошибка
+    # ERROR
     # ========================================================
 
     print_error "Установщик Node завершился с ошибкой."
@@ -1417,7 +1428,13 @@ install_all() {
     fi
 
 
-    # ВСЕГДА запускаем установщик Node
+    # ========================================================
+    # NODE
+    #
+    # Всегда запускаем installer.
+    # Если он видит старый Node — автоматически отвечаем y.
+    # ========================================================
+
     install_remnanode || true
 
 
