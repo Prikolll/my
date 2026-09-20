@@ -52,7 +52,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo
 echo "============================================================"
-echo " RemnaWave VPS Bootstrap"
+echo "             RemnaWave VPS Bootstrap"
 echo "============================================================"
 echo
 echo "Лог: $LOG_FILE"
@@ -108,18 +108,23 @@ download_file() {
     echo
 
     if command -v curl >/dev/null 2>&1; then
+
         curl -fL \
             --retry 3 \
             --connect-timeout 15 \
             "$url" \
             -o "$destination"
+
     elif command -v wget >/dev/null 2>&1; then
+
         wget \
             --tries=3 \
             --timeout=15 \
             -O "$destination" \
             "$url"
+
     else
+
         echo "Ошибка: не найден curl или wget."
         return 1
     fi
@@ -159,14 +164,16 @@ disable_fwupd() {
     systemctl is-active fwupd.service 2>/dev/null || true
 
     if systemctl is-enabled fwupd.service 2>/dev/null | grep -qE 'masked|disabled'; then
+
         echo
         echo "fwupd успешно отключён."
         STATUS[1]="OK"
+
     else
+
         echo
         echo "Проверка стандартного состояния не подтвердила отключение."
 
-        # Дополнительная защита
         if [[ ! -L /etc/systemd/system/fwupd.service ]]; then
             ln -sf /dev/null /etc/systemd/system/fwupd.service
         fi
@@ -174,11 +181,15 @@ disable_fwupd() {
         systemctl daemon-reload
 
         if systemctl is-enabled fwupd.service 2>/dev/null | grep -q masked; then
+
             echo "fwupd замаскирован."
             STATUS[1]="OK"
+
         else
+
             echo "Не удалось полностью отключить fwupd."
             STATUS[1]="FAILED"
+
         fi
     fi
 }
@@ -200,7 +211,7 @@ apt_update_show_upgrades() {
     echo "Выполняется apt update..."
     echo
 
-    if apt update; then
+    if apt-get update; then
 
         echo
         echo "============================================================"
@@ -208,15 +219,41 @@ apt_update_show_upgrades() {
         echo "============================================================"
         echo
 
-        apt list --upgradable 2>/dev/null || true
+        # apt list --upgradable специально не используется,
+        # чтобы не получать:
+        # WARNING: apt does not have a stable CLI interface...
+
+        if apt-get -s upgrade 2>/dev/null | \
+            awk '/^Inst / {
+                package=$2
+                version=$3
+                gsub(/\[/, "", version)
+                gsub(/\]/, "", version)
+                print package, version
+            }'; then
+
+            :
+
+        else
+
+            echo "Не удалось получить список обновлений."
+
+        fi
+
+        echo
+        echo "Количество пакетов, доступных для обновления:"
+
+        apt-get -s upgrade 2>/dev/null | \
+            grep -c '^Inst ' || true
 
         STATUS[2]="OK"
 
     else
 
         echo
-        echo "Ошибка выполнения apt update."
+        echo "Ошибка выполнения apt-get update."
         STATUS[2]="FAILED"
+
     fi
 }
 
@@ -271,6 +308,7 @@ EOF
             echo
             echo "Не удалось подтвердить отключение IPv6."
             STATUS[3]="FAILED"
+
         fi
 
     else
@@ -278,6 +316,7 @@ EOF
         echo
         echo "Ошибка применения sysctl."
         STATUS[3]="FAILED"
+
     fi
 }
 
@@ -369,11 +408,15 @@ EOF
         echo
 
         if [[ "$congestion" == "bbr" && "$qdisc" == "fq" ]]; then
+
             echo "BBR успешно настроен."
             STATUS[4]="OK"
+
         else
+
             echo "BBR не удалось подтвердить."
             STATUS[4]="FAILED"
+
         fi
 
     else
@@ -381,6 +424,7 @@ EOF
         echo
         echo "Ошибка применения network sysctl."
         STATUS[4]="FAILED"
+
     fi
 }
 
@@ -406,17 +450,23 @@ install_zapret() {
     echo "Скачивание zapret.dat..."
 
     if ! download_file "$ZAPRET_URL" "$temp_file"; then
+
         echo
         echo "Ошибка скачивания zapret.dat."
+
         rm -f "$temp_file"
+
         STATUS[5]="FAILED"
         return
     fi
 
     if [[ ! -s "$temp_file" ]]; then
+
         echo
         echo "Ошибка: скачанный zapret.dat пуст."
+
         rm -f "$temp_file"
+
         STATUS[5]="FAILED"
         return
     fi
@@ -430,9 +480,9 @@ install_zapret() {
     echo "$ZAPRET_FILE"
     echo
 
-    # --------------------------------------------------------
-    # Проверяем Docker Compose
-    # --------------------------------------------------------
+    # ========================================================
+    # Docker Compose
+    # ========================================================
 
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
@@ -489,6 +539,7 @@ if service_index is None:
 service_end = len(lines)
 
 for i in range(service_index + 1, len(lines)):
+
     line = lines[i]
 
     if not line.strip():
@@ -501,12 +552,13 @@ for i in range(service_index + 1, len(lines)):
         break
 
 # ------------------------------------------------------------
-# Find volumes inside remnanode
+# Find volumes
 # ------------------------------------------------------------
 
 volumes_index = None
 
 for i in range(service_index + 1, service_end):
+
     line = lines[i]
 
     if not line.strip():
@@ -534,7 +586,7 @@ if volumes_index is not None:
 else:
 
     # --------------------------------------------------------
-    # Create volumes section before next service
+    # Create volumes section
     # --------------------------------------------------------
 
     insert_index = service_end
@@ -563,7 +615,9 @@ PY
 
             if command -v docker >/dev/null 2>&1; then
 
-                if docker compose -f "$REMNANODE_COMPOSE" config >/dev/null 2>&1; then
+                if docker compose \
+                    -f "$REMNANODE_COMPOSE" \
+                    config >/dev/null 2>&1; then
 
                     echo "Docker Compose config: OK"
 
@@ -583,9 +637,11 @@ PY
                             STATUS[5]="OK"
 
                         else
+
                             echo
                             echo "Ошибка запуска Docker Compose."
                             STATUS[5]="FAILED"
+
                         fi
 
                     else
@@ -593,18 +649,21 @@ PY
                         echo
                         echo "Не удалось остановить Docker Compose."
                         STATUS[5]="FAILED"
+
                     fi
 
                 else
 
                     echo
                     echo "Ошибка в Docker Compose после изменения."
-                    echo "Восстанавливать автоматически не будем."
                     echo
                     echo "Backup:"
-                    ls -1t "${REMNANODE_COMPOSE}.bak."* 2>/dev/null | head -1 || true
+                    ls -1t \
+                        "${REMNANODE_COMPOSE}.bak."* \
+                        2>/dev/null | head -1 || true
 
                     STATUS[5]="FAILED"
+
                 fi
 
             else
@@ -614,6 +673,7 @@ PY
                 echo "Compose изменён, но контейнеры не перезапускались."
 
                 STATUS[5]="OK"
+
             fi
 
         else
@@ -621,6 +681,7 @@ PY
             echo
             echo "Не удалось добавить volume в compose."
             STATUS[5]="FAILED"
+
         fi
 
     else
@@ -630,9 +691,10 @@ PY
         echo "$REMNANODE_COMPOSE"
         echo
         echo "Zapret.dat установлен отдельно."
-        echo "После установки RemnaNode volume можно будет добавить повторным запуском пункта 5."
+        echo "После установки RemnaNode можно повторно запустить пункт 5."
 
         STATUS[5]="OK"
+
     fi
 }
 
@@ -654,16 +716,18 @@ install_warp() {
 
     echo "Установка необходимых пакетов..."
 
-    if ! apt install -y wireguard curl; then
+    if ! apt-get install -y wireguard curl; then
+
         echo
         echo "Ошибка установки wireguard/curl."
         STATUS[6]="FAILED"
         return
+
     fi
 
-    # --------------------------------------------------------
-    # Download wgcf
-    # --------------------------------------------------------
+    # ========================================================
+    # wgcf
+    # ========================================================
 
     local wgcf="/usr/local/bin/wgcf"
 
@@ -671,10 +735,12 @@ install_warp() {
     echo "Скачивание wgcf..."
 
     if ! download_file "$WGCF_URL" "$wgcf"; then
+
         echo
         echo "Ошибка скачивания wgcf."
         STATUS[6]="FAILED"
         return
+
     fi
 
     chmod +x "$wgcf"
@@ -683,17 +749,15 @@ install_warp() {
     echo "wgcf установлен:"
     "$wgcf" --version 2>/dev/null || true
 
-    # --------------------------------------------------------
+    # ========================================================
     # Temporary directories
-    # --------------------------------------------------------
+    # ========================================================
 
     local tmp1
     local tmp2
 
     tmp1=$(mktemp -d)
     tmp2=$(mktemp -d)
-
-    trap 'rm -rf "$tmp1" "$tmp2"' RETURN
 
     # ========================================================
     # WARP 1
@@ -707,6 +771,7 @@ install_warp() {
 
     cd "$tmp1" || {
         echo "Не удалось перейти в $tmp1"
+        rm -rf "$tmp1" "$tmp2"
         STATUS[6]="FAILED"
         return
     }
@@ -716,42 +781,62 @@ install_warp() {
         echo "Автоматически принимаем WARP TOS..."
 
         if ! "$wgcf" register --accept-tos; then
+
             echo
             echo "Ошибка регистрации WARP 1."
+
             cd /root || true
+            rm -rf "$tmp1" "$tmp2"
+
             STATUS[6]="FAILED"
             return
+
         fi
 
     else
 
         echo "Регистрация WARP 1."
-        echo "Если wgcf запросит подтверждение, ответьте вручную."
         echo
 
         if ! "$wgcf" register; then
+
             echo
             echo "Ошибка регистрации WARP 1."
+
             cd /root || true
+            rm -rf "$tmp1" "$tmp2"
+
             STATUS[6]="FAILED"
             return
+
         fi
+
     fi
 
     if ! "$wgcf" generate; then
+
         echo
         echo "Ошибка генерации WARP 1."
+
         cd /root || true
+        rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return
+
     fi
 
     if [[ ! -f wgcf-profile.conf ]]; then
+
         echo
         echo "wgcf-profile.conf для WARP 1 не найден."
+
         cd /root || true
+        rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return
+
     fi
 
     cp wgcf-profile.conf "$WARP1_CONF"
@@ -767,8 +852,12 @@ install_warp() {
     echo
 
     cd "$tmp2" || {
+
         echo "Не удалось перейти в $tmp2"
+
         cd /root || true
+        rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return
     }
@@ -778,47 +867,69 @@ install_warp() {
         echo "Автоматически принимаем WARP TOS..."
 
         if ! "$wgcf" register --accept-tos; then
+
             echo
             echo "Ошибка регистрации WARP 2."
+
             cd /root || true
+            rm -rf "$tmp1" "$tmp2"
+
             STATUS[6]="FAILED"
             return
+
         fi
 
     else
 
         echo "Регистрация WARP 2."
-        echo "Если wgcf запросит подтверждение, ответьте вручную."
         echo
 
         if ! "$wgcf" register; then
+
             echo
             echo "Ошибка регистрации WARP 2."
+
             cd /root || true
+            rm -rf "$tmp1" "$tmp2"
+
             STATUS[6]="FAILED"
             return
+
         fi
+
     fi
 
     if ! "$wgcf" generate; then
+
         echo
         echo "Ошибка генерации WARP 2."
+
         cd /root || true
+        rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return
+
     fi
 
     if [[ ! -f wgcf-profile.conf ]]; then
+
         echo
         echo "wgcf-profile.conf для WARP 2 не найден."
+
         cd /root || true
+        rm -rf "$tmp1" "$tmp2"
+
         STATUS[6]="FAILED"
         return
+
     fi
 
     cp wgcf-profile.conf "$WARP2_CONF"
 
     cd /root || true
+
+    rm -rf "$tmp1" "$tmp2"
 
     # ========================================================
     # Configure WARP 1
@@ -828,42 +939,39 @@ install_warp() {
     echo "Настройка WARP 1..."
 
     if [[ ! -f "$WARP1_CONF" ]]; then
+
         echo "Конфигурация WARP 1 не найдена."
         STATUS[6]="FAILED"
         return
+
     fi
 
-    sed -i \
-        -e '/^Address = /c\Address = 172.16.0.2/32' \
-        -e '/^Address = /!b' \
-        "$WARP1_CONF"
-
-    sed -i '/^Address = /{n;}' "$WARP1_CONF" 2>/dev/null || true
-
-    # Remove IPv6 Address if wgcf generated it
+    # Remove IPv6 addresses
     sed -i -E '/^Address = .*:/d' "$WARP1_CONF"
 
-    # Remove existing Table
+    # Set IPv4 address
+    sed -i '/^Address = /d' "$WARP1_CONF"
+    sed -i '/^\[Interface\]/a Address = 172.16.0.2/32' "$WARP1_CONF"
+
+    # Table off
     sed -i '/^Table = /d' "$WARP1_CONF"
 
-    # Remove existing PersistentKeepalive
-    sed -i '/^PersistentKeepalive = /d' "$WARP1_CONF"
-
-    # Add Table after MTU if possible
     if grep -q '^MTU = ' "$WARP1_CONF"; then
         sed -i '/^MTU = /a Table = off' "$WARP1_CONF"
     else
         sed -i '/^\[Interface\]/a Table = off' "$WARP1_CONF"
     fi
 
-    # Add PersistentKeepalive after endpoint
+    # PersistentKeepalive
+    sed -i '/^PersistentKeepalive = /d' "$WARP1_CONF"
+
     if grep -q '^Endpoint = ' "$WARP1_CONF"; then
         sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP1_CONF"
     else
         sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP1_CONF"
     fi
 
-    # Force AllowedIPs
+    # AllowedIPs
     sed -i '/^AllowedIPs = /d' "$WARP1_CONF"
     sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP1_CONF"
 
@@ -875,18 +983,22 @@ install_warp() {
     echo "Настройка WARP 2..."
 
     if [[ ! -f "$WARP2_CONF" ]]; then
+
         echo "Конфигурация WARP 2 не найдена."
         STATUS[6]="FAILED"
         return
+
     fi
 
+    # Remove IPv6 addresses
     sed -i -E '/^Address = .*:/d' "$WARP2_CONF"
 
+    # Set IPv4 address
     sed -i '/^Address = /d' "$WARP2_CONF"
     sed -i '/^\[Interface\]/a Address = 172.16.0.3/32' "$WARP2_CONF"
 
+    # Table off
     sed -i '/^Table = /d' "$WARP2_CONF"
-    sed -i '/^PersistentKeepalive = /d' "$WARP2_CONF"
 
     if grep -q '^MTU = ' "$WARP2_CONF"; then
         sed -i '/^MTU = /a Table = off' "$WARP2_CONF"
@@ -894,12 +1006,16 @@ install_warp() {
         sed -i '/^\[Interface\]/a Table = off' "$WARP2_CONF"
     fi
 
+    # PersistentKeepalive
+    sed -i '/^PersistentKeepalive = /d' "$WARP2_CONF"
+
     if grep -q '^Endpoint = ' "$WARP2_CONF"; then
         sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP2_CONF"
     else
         sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP2_CONF"
     fi
 
+    # AllowedIPs
     sed -i '/^AllowedIPs = /d' "$WARP2_CONF"
     sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP2_CONF"
 
@@ -927,7 +1043,7 @@ EOF
     chmod +x "$WARP_START"
 
     # ========================================================
-    # systemd service
+    # systemd
     # ========================================================
 
     echo
@@ -949,7 +1065,6 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-
     systemctl enable warp.service
 
     echo
@@ -962,11 +1077,14 @@ EOF
         echo
 
         wg show wgcf1 || true
+
         echo
+
         wg show wgcf2 || true
 
         echo
         ip addr show wgcf1 || true
+
         echo
         ip addr show wgcf2 || true
 
@@ -982,6 +1100,7 @@ EOF
             echo
             echo "Один или оба WARP интерфейса не запустились."
             STATUS[6]="FAILED"
+
         fi
 
     else
@@ -989,9 +1108,11 @@ EOF
         echo
         echo "Ошибка запуска warp.service."
         echo
+
         systemctl status warp.service --no-pager || true
 
         STATUS[6]="FAILED"
+
     fi
 }
 
@@ -1011,11 +1132,13 @@ configure_ufw() {
 
     echo "Установка UFW..."
 
-    if ! apt install -y ufw; then
+    if ! apt-get install -y ufw; then
+
         echo
         echo "Ошибка установки UFW."
         STATUS[7]="FAILED"
         return
+
     fi
 
     echo
@@ -1043,6 +1166,7 @@ configure_ufw() {
         echo
         echo "Ошибка включения UFW."
         STATUS[7]="FAILED"
+
     fi
 }
 
@@ -1062,11 +1186,13 @@ install_fail2ban() {
 
     echo "Установка Fail2ban..."
 
-    if ! apt install -y fail2ban; then
+    if ! apt-get install -y fail2ban; then
+
         echo
         echo "Ошибка установки Fail2ban."
         STATUS[8]="FAILED"
         return
+
     fi
 
     echo
@@ -1113,22 +1239,28 @@ EOF
         fail2ban-client status sshd 2>/dev/null || true
 
         if systemctl is-active --quiet fail2ban; then
+
             echo
             echo "Fail2ban успешно настроен."
             STATUS[8]="OK"
+
         else
+
             echo
             echo "Fail2ban не запущен."
             STATUS[8]="FAILED"
+
         fi
 
     else
 
         echo
         echo "Ошибка запуска Fail2ban."
+
         systemctl status fail2ban --no-pager || true
 
         STATUS[8]="FAILED"
+
     fi
 }
 
@@ -1153,37 +1285,33 @@ install_remnanode() {
     echo "Скачивание установщика RemnaNode..."
     echo
 
-    if ! download_file "$REMNANODE_INSTALLER_URL" "$node_installer"; then
+    if ! download_file \
+        "$REMNANODE_INSTALLER_URL" \
+        "$node_installer"; then
+
         echo
         echo "Ошибка скачивания установщика RemnaNode."
+
         rm -f "$node_installer"
+
         STATUS[9]="FAILED"
         return
     fi
 
-    # --------------------------------------------------------
     # Fix CRLF
-    # --------------------------------------------------------
-
     sed -i 's/\r$//' "$node_installer"
 
     chmod +x "$node_installer"
 
     echo
-    echo "============================================================"
-    echo "Сейчас будет запущен интерактивный установщик RemnaNode."
-    echo
-    echo "Bootstrap НЕ будет автоматически отвечать"
-    echo "на его вопросы."
-    echo "Все ответы вводятся вами."
-    echo "============================================================"
-    echo
-
-    read -r -p "Нажмите Enter для запуска установщика RemnaNode..." _
-
-    echo
     echo "Запуск RemnaNode installer..."
     echo
+
+    # --------------------------------------------------------
+    # ВАЖНО:
+    # Installer получает настоящий терминал.
+    # Bootstrap не отвечает на его вопросы автоматически.
+    # --------------------------------------------------------
 
     bash "$node_installer" @ install \
         </dev/tty \
@@ -1225,37 +1353,33 @@ install_selfsteal() {
     echo "Скачивание установщика Selfsteal..."
     echo
 
-    if ! download_file "$SELFSTEAL_INSTALLER_URL" "$selfsteal_installer"; then
+    if ! download_file \
+        "$SELFSTEAL_INSTALLER_URL" \
+        "$selfsteal_installer"; then
+
         echo
         echo "Ошибка скачивания установщика Selfsteal."
+
         rm -f "$selfsteal_installer"
+
         STATUS[10]="FAILED"
         return
     fi
 
-    # --------------------------------------------------------
     # Fix CRLF
-    # --------------------------------------------------------
-
     sed -i 's/\r$//' "$selfsteal_installer"
 
     chmod +x "$selfsteal_installer"
 
     echo
-    echo "============================================================"
-    echo "Сейчас будет запущен интерактивный установщик Selfsteal."
-    echo
-    echo "Bootstrap НЕ будет автоматически отвечать"
-    echo "на его вопросы."
-    echo "Все ответы вводятся вами."
-    echo "============================================================"
-    echo
-
-    read -r -p "Нажмите Enter для запуска установщика Selfsteal..." _
-
-    echo
     echo "Запуск Selfsteal installer..."
     echo
+
+    # --------------------------------------------------------
+    # ВАЖНО:
+    # Installer получает настоящий терминал.
+    # Bootstrap не отвечает на его вопросы автоматически.
+    # --------------------------------------------------------
 
     bash "$selfsteal_installer" \
         </dev/tty \
@@ -1277,6 +1401,97 @@ install_selfsteal() {
 }
 
 # ============================================================
+# Report 1-8
+# ============================================================
+
+show_report_1_to_8() {
+
+    echo
+    echo "============================================================"
+    echo "                 ОТЧЁТ ПО ПУНКТАМ 1-8"
+    echo "============================================================"
+    echo
+
+    printf "%-4s %-45s %s\n" "#" "Задача" "Статус"
+    echo "----------------------------------------------------------------"
+
+    printf "%-4s %-45s %s\n" \
+        "1" \
+        "Отключить fwupd" \
+        "${STATUS[1]}"
+
+    printf "%-4s %-45s %s\n" \
+        "2" \
+        "apt update + доступные обновления" \
+        "${STATUS[2]}"
+
+    printf "%-4s %-45s %s\n" \
+        "3" \
+        "Отключить IPv6" \
+        "${STATUS[3]}"
+
+    printf "%-4s %-45s %s\n" \
+        "4" \
+        "BBR / Network sysctl" \
+        "${STATUS[4]}"
+
+    printf "%-4s %-45s %s\n" \
+        "5" \
+        "Zapret.dat" \
+        "${STATUS[5]}"
+
+    printf "%-4s %-45s %s\n" \
+        "6" \
+        "2 WARP профиля" \
+        "${STATUS[6]}"
+
+    printf "%-4s %-45s %s\n" \
+        "7" \
+        "UFW" \
+        "${STATUS[7]}"
+
+    printf "%-4s %-45s %s\n" \
+        "8" \
+        "Fail2ban" \
+        "${STATUS[8]}"
+
+    echo
+}
+
+# ============================================================
+# Final report
+# ============================================================
+
+show_final_report() {
+
+    echo
+    echo "============================================================"
+    echo "                 ИТОГОВЫЙ ОТЧЁТ"
+    echo "============================================================"
+    echo
+
+    printf "%-4s %-45s %s\n" "#" "Задача" "Статус"
+    echo "----------------------------------------------------------------"
+
+    printf "%-4s %-45s %s\n" "1" "Отключить fwupd" "${STATUS[1]}"
+    printf "%-4s %-45s %s\n" "2" "apt update" "${STATUS[2]}"
+    printf "%-4s %-45s %s\n" "3" "Отключить IPv6" "${STATUS[3]}"
+    printf "%-4s %-45s %s\n" "4" "BBR / Network sysctl" "${STATUS[4]}"
+    printf "%-4s %-45s %s\n" "5" "Zapret.dat" "${STATUS[5]}"
+    printf "%-4s %-45s %s\n" "6" "2 WARP профиля" "${STATUS[6]}"
+    printf "%-4s %-45s %s\n" "7" "UFW" "${STATUS[7]}"
+    printf "%-4s %-45s %s\n" "8" "Fail2ban" "${STATUS[8]}"
+    printf "%-4s %-45s %s\n" "9" "RemnaNode" "${STATUS[9]}"
+    printf "%-4s %-45s %s\n" "10" "Selfsteal" "${STATUS[10]}"
+    printf "%-4s %-45s %s\n" "11" "Установка 1-9" "${STATUS[11]}"
+
+    echo
+    echo "Лог:"
+    echo "$LOG_FILE"
+    echo
+}
+
+# ============================================================
 # 11. Install 1-9
 # ============================================================
 
@@ -1290,23 +1505,23 @@ install_1_to_9() {
 
     STATUS[11]="RUNNING"
 
-    echo "Будут последовательно выполнены пункты:"
+    echo "Будут выполнены:"
     echo
     echo "  1. Отключить fwupd"
     echo "  2. apt update + показать доступные обновления"
     echo "  3. Отключить IPv6"
     echo "  4. Настроить BBR / Network sysctl"
-    echo "  5. Установить Zapret.dat"
-    echo "  6. Установить и настроить 2 WARP профиля"
-    echo "  7. Настроить UFW"
-    echo "  8. Установить и настроить Fail2ban"
-    echo "  9. Установить RemnaNode"
+    echo "  5. Zapret.dat — по вашему выбору"
+    echo "  6. 2 WARP профиля — по вашему выбору"
+    echo "  7. UFW — по вашему выбору"
+    echo "  8. Fail2ban"
+    echo "  9. RemnaNode"
     echo
-    echo "Selfsteal (пункт 10) автоматически запущен НЕ будет."
+    echo "Пункт 10 Selfsteal через этот режим НЕ запускается."
     echo
 
     # ========================================================
-    # Ask about Zapret
+    # Ask before 5
     # ========================================================
 
     local run_zapret="no"
@@ -1318,7 +1533,7 @@ install_1_to_9() {
     echo
 
     # ========================================================
-    # Ask about WARP
+    # Ask before 6
     # ========================================================
 
     local run_warp="no"
@@ -1330,7 +1545,7 @@ install_1_to_9() {
     echo
 
     # ========================================================
-    # Ask about UFW
+    # Ask before 7
     # ========================================================
 
     local run_ufw="no"
@@ -1398,6 +1613,7 @@ install_1_to_9() {
         echo
         echo "5. Zapret.dat пропущен."
         STATUS[5]="SKIPPED"
+
     fi
 
     echo
@@ -1418,6 +1634,7 @@ install_1_to_9() {
         echo
         echo "6. WARP пропущен."
         STATUS[6]="SKIPPED"
+
     fi
 
     echo
@@ -1437,6 +1654,7 @@ install_1_to_9() {
         echo
         echo "7. UFW пропущен."
         STATUS[7]="SKIPPED"
+
     fi
 
     echo
@@ -1454,6 +1672,18 @@ install_1_to_9() {
     echo
 
     # ========================================================
+    # Report before RemnaNode
+    # ========================================================
+
+    show_report_1_to_8
+
+    echo
+    echo "============================================================"
+    echo "Переход к установке RemnaNode (пункт 9)"
+    echo "============================================================"
+    echo
+
+    # ========================================================
     # 9
     # ========================================================
 
@@ -1465,83 +1695,17 @@ install_1_to_9() {
 
     STATUS[11]="OK"
 
-    echo
-    echo "============================================================"
-    echo "Пункт 11 завершён."
-    echo "============================================================"
-}
-
-# ============================================================
-# Status report
-# ============================================================
-
-show_status() {
+    show_final_report
 
     echo
     echo "============================================================"
-    echo "Статус выполнения"
+    echo "Установка 1-9 завершена."
+    echo "Скрипт завершает работу."
     echo "============================================================"
     echo
 
-    printf "%-4s %-45s %s\n" "#" "Задача" "Статус"
-    echo "----------------------------------------------------------------"
-
-    printf "%-4s %-45s %s\n" \
-        "1" \
-        "Отключить fwupd" \
-        "${STATUS[1]}"
-
-    printf "%-4s %-45s %s\n" \
-        "2" \
-        "apt update + доступные обновления" \
-        "${STATUS[2]}"
-
-    printf "%-4s %-45s %s\n" \
-        "3" \
-        "Отключить IPv6" \
-        "${STATUS[3]}"
-
-    printf "%-4s %-45s %s\n" \
-        "4" \
-        "BBR / Network sysctl" \
-        "${STATUS[4]}"
-
-    printf "%-4s %-45s %s\n" \
-        "5" \
-        "Zapret.dat" \
-        "${STATUS[5]}"
-
-    printf "%-4s %-45s %s\n" \
-        "6" \
-        "2 WARP профиля" \
-        "${STATUS[6]}"
-
-    printf "%-4s %-45s %s\n" \
-        "7" \
-        "UFW" \
-        "${STATUS[7]}"
-
-    printf "%-4s %-45s %s\n" \
-        "8" \
-        "Fail2ban" \
-        "${STATUS[8]}"
-
-    printf "%-4s %-45s %s\n" \
-        "9" \
-        "RemnaNode" \
-        "${STATUS[9]}"
-
-    printf "%-4s %-45s %s\n" \
-        "10" \
-        "Selfsteal" \
-        "${STATUS[10]}"
-
-    printf "%-4s %-45s %s\n" \
-        "11" \
-        "Установка 1-9" \
-        "${STATUS[11]}"
-
-    echo
+    # Не возвращаемся в меню.
+    exit 0
 }
 
 # ============================================================
@@ -1631,7 +1795,6 @@ while true; do
 
         11)
             install_1_to_9
-            pause_menu
             ;;
 
         0)
@@ -1646,6 +1809,7 @@ while true; do
             echo "Неверный пункт."
             sleep 1
             ;;
+
     esac
 
 done
