@@ -1449,70 +1449,75 @@ install_remnanode() {
 
     chmod +x "$node_installer"
 
-    # --------------------------------------------------------
-    # Устанавливаем expect, если не установлен.
-    # expect создаёт псевдотерминал (pty), через который
-    # установщик получает ввод. Это исключает конкуренцию
-    # за /dev/tty между cat и установщиком, из-за которой
-    # вопросы после SECRET_KEY (порт и др.) пропускались.
-    # --------------------------------------------------------
-
-    if ! command -v expect >/dev/null 2>&1; then
-
-        msg_info "Установка expect..."
-
-        apt-get install -y expect >/dev/null 2>&1 || true
-
-    fi
-
     echo
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    if command -v expect >/dev/null 2>&1; then
+    # Используем Python с pty для создания псевдотерминала.
+    # Это решает проблему конкуренции за /dev/tty между
+    # установщиком и внешними процессами.
+    # Автоматически отправляем 'y' на первый вопрос,
+    # затем передаём управление пользователю.
 
-        # Создаём expect-скрипт во временном файле.
-        # 1. Ждём первый вопрос [y/N] и отправляем "y".
-        # 2. interact — передаём управление пользователю
-        #    для всех остальных вопросов (SECRET_KEY, порт и т.д.).
-        # 3. После завершения установщика получаем его exit code.
+    python3 - "$node_installer" <<'PYEOF'
+import pty
+import os
+import sys
+import select
+import time
+import termios
+import tty
 
-        local expect_script
-        expect_script=$(mktemp)
+installer = sys.argv[1]
 
-        cat > "$expect_script" <<'EXPECT_EOF'
-set timeout -1
-spawn bash [lindex $argv 0] @ install
-expect {
-    -ex {[y/N]} { send "y\r" }
-    -ex {(y/N)} { send "y\r" }
-    timeout {}
-    eof { exit 1 }
-}
-interact
-catch wait result
-if {[llength $result] >= 4} {
-    exit [lindex $result 3]
-}
-exit 0
-EXPECT_EOF
+pid, fd = pty.fork()
 
-        expect "$expect_script" "$node_installer"
-        local installer_rc=$?
+if pid == 0:
+    # Дочерний процесс — запускаем установщик
+    os.execvp("bash", ["bash", installer, "@", "install"])
 
-        rm -f "$expect_script"
+# Родительский процесс
+# Ждём появления первого вопроса и отправляем 'y'
+time.sleep(1)
+os.write(fd, b"y\n")
 
-    else
+# Сохраняем настройки терминала
+old_tty = termios.tcgetattr(0)
 
-        msg_warn "expect не найден, используем fallback..."
+try:
+    # Переводим терминал в raw mode
+    tty.setraw(0)
 
-        { echo "y"; cat /dev/tty; } | bash "$node_installer" @ install \
-            >/dev/tty \
-            2>/dev/tty
+    while True:
+        r, _, _ = select.select([0, fd], [], [])
 
-        local installer_rc=$?
+        if 0 in r:
+            # Читаем ввод с клавиатуры
+            data = os.read(0, 1024)
+            if not data:
+                break
+            os.write(fd, data)
 
-    fi
+        if fd in r:
+            # Читаем вывод установщика
+            try:
+                data = os.read(fd, 1024)
+            except:
+                break
+            if not data:
+                break
+            os.write(1, data)
+
+finally:
+    # Восстанавливаем настройки терминала
+    termios.tcsetattr(0, termios.TCSADRAIN, old_tty)
+
+# Получаем exit code установщика
+_, status = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(status))
+PYEOF
+
+    local installer_rc=$?
 
     rm -f "$node_installer"
 
