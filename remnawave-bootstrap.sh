@@ -53,7 +53,7 @@ else
 fi
 
 # ============================================================
-# Colored output helpers
+# Output helpers
 # ============================================================
 
 msg_info() {
@@ -93,7 +93,7 @@ msg_step() {
 # ============================================================
 
 if [[ "$EUID" -ne 0 ]]; then
-    msg_error "Ошибка: скрипт необходимо запускать от root."
+    echo "Ошибка: скрипт необходимо запускать от root."
     exit 1
 fi
 
@@ -127,12 +127,12 @@ for i in {1..11}; do
 done
 
 # ============================================================
-# Helpers
+# Interactive helpers
 # ============================================================
 
 pause_menu() {
     echo
-    read -r -p "Нажмите Enter для возврата в меню..." _
+    read -r -p "Нажмите Enter для возврата в меню..." _ </dev/tty
 }
 
 ask_yes_no() {
@@ -142,7 +142,7 @@ ask_yes_no() {
     while true; do
 
         echo -ne "${YELLOW}${question} [y/N]: ${RESET}"
-        read -r answer
+        read -r answer </dev/tty
 
         case "${answer,,}" in
             y|yes)
@@ -239,10 +239,6 @@ disable_fwupd() {
 
     systemctl daemon-reload
 
-    # --------------------------------------------------------
-    # Проверяем маски
-    # --------------------------------------------------------
-
     local fwupd_masked="no"
     local refresh_masked="no"
     local fwupd_active="no"
@@ -266,14 +262,9 @@ disable_fwupd() {
         refresh_active="yes"
     fi
 
-    # --------------------------------------------------------
-    # Если systemctl mask не создал маску — создаём вручную
-    # --------------------------------------------------------
-
     if [[ "$fwupd_masked" != "yes" ]]; then
 
         rm -f /etc/systemd/system/fwupd.service
-
         ln -sf /dev/null /etc/systemd/system/fwupd.service
 
         systemctl daemon-reload
@@ -283,16 +274,11 @@ disable_fwupd() {
     if [[ "$refresh_masked" != "yes" ]]; then
 
         rm -f /etc/systemd/system/fwupd-refresh.service
-
         ln -sf /dev/null /etc/systemd/system/fwupd-refresh.service
 
         systemctl daemon-reload
 
     fi
-
-    # --------------------------------------------------------
-    # Финальная проверка
-    # --------------------------------------------------------
 
     fwupd_masked="no"
     refresh_masked="no"
@@ -616,10 +602,6 @@ install_zapret() {
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
 
-    # ========================================================
-    # Docker Compose
-    # ========================================================
-
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
         echo
@@ -642,17 +624,9 @@ lines = compose.read_text().splitlines()
 
 mount = "/opt/remnanode/xray/share/zapret.dat:/usr/local/bin/zapret.dat:ro"
 
-# ------------------------------------------------------------
-# Already exists
-# ------------------------------------------------------------
-
 if any(mount in line for line in lines):
     print("Volume zapret.dat уже присутствует.")
     sys.exit(0)
-
-# ------------------------------------------------------------
-# Find remnanode service
-# ------------------------------------------------------------
 
 service_index = None
 service_indent = None
@@ -670,10 +644,6 @@ if service_index is None:
     print("Не найден сервис remnanode в compose.")
     sys.exit(2)
 
-# ------------------------------------------------------------
-# Find end of service
-# ------------------------------------------------------------
-
 service_end = len(lines)
 
 for i in range(service_index + 1, len(lines)):
@@ -689,10 +659,6 @@ for i in range(service_index + 1, len(lines)):
         service_end = i
         break
 
-# ------------------------------------------------------------
-# Find volumes
-# ------------------------------------------------------------
-
 volumes_index = None
 
 for i in range(service_index + 1, service_end):
@@ -707,10 +673,6 @@ for i in range(service_index + 1, service_end):
     if indent == service_indent + 2 and line.strip() == "volumes:":
         volumes_index = i
         break
-
-# ------------------------------------------------------------
-# Add mount
-# ------------------------------------------------------------
 
 if volumes_index is not None:
 
@@ -1385,7 +1347,6 @@ install_remnanode() {
         return
     fi
 
-    # Fix CRLF
     sed -i 's/\r$//' "$node_installer"
 
     chmod +x "$node_installer"
@@ -1394,29 +1355,20 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    # ========================================================
-    # Пункт 11:
-    # первый вопрос получает автоматический y.
-    #
-    # После первого y:
-    # весь дальнейший ввод идёт от пользователя через /dev/tty.
-    #
-    # Обычный пункт 9:
-    # полностью интерактивный с первого вопроса.
-    # ========================================================
-
     if [[ "$AUTO_FIRST_Y" == "yes" ]]; then
 
-        bash "$node_installer" @ install \
-            < <(
-                printf 'y\n'
-                cat /dev/tty
-            ) \
+        # Только первое подтверждение = y.
+        # Все последующие ответы вводит пользователь.
+        {
+            printf 'y\n'
+            cat /dev/tty
+        } | bash "$node_installer" @ install \
             >/dev/tty \
             2>/dev/tty
 
     else
 
+        # Полностью интерактивный запуск.
         bash "$node_installer" @ install \
             </dev/tty \
             >/dev/tty \
@@ -1474,7 +1426,6 @@ install_selfsteal() {
         return
     fi
 
-    # Fix CRLF
     sed -i 's/\r$//' "$selfsteal_installer"
 
     chmod +x "$selfsteal_installer"
@@ -1697,7 +1648,6 @@ install_1_to_9() {
 
     if [[ "$run_warp" == "yes" ]]; then
 
-        # Через пункт 11 TOS принимается автоматически.
         install_warp yes
 
     else
@@ -1745,14 +1695,10 @@ install_1_to_9() {
     install_remnanode yes
 
     # ========================================================
-    # Installation 1-9 finished
+    # Finish
     # ========================================================
 
     STATUS[11]="OK"
-
-    # ========================================================
-    # Final report
-    # ========================================================
 
     show_final_report
 
@@ -1760,7 +1706,6 @@ install_1_to_9() {
     msg_ok "Установка 1-9 завершена."
     echo
 
-    # Не возвращаемся в меню.
     exit 0
 }
 
@@ -1796,7 +1741,7 @@ while true; do
     echo
 
     echo -ne "${WHITE}Выберите пункт: ${RESET}"
-    read -r choice
+    read -r choice </dev/tty
 
     case "$choice" in
 
