@@ -1,3 +1,4 @@
+```bash
 #!/usr/bin/env bash
 
 set -o pipefail
@@ -239,7 +240,7 @@ disable_fwupd() {
     systemctl daemon-reload
 
     # --------------------------------------------------------
-    # Проверяем реальное состояние
+    # Проверяем маски
     # --------------------------------------------------------
 
     local fwupd_masked="no"
@@ -247,11 +248,13 @@ disable_fwupd() {
     local fwupd_active="no"
     local refresh_active="no"
 
-    if systemctl is-enabled fwupd.service 2>/dev/null | grep -q "masked"; then
+    if [[ -L /etc/systemd/system/fwupd.service ]] &&
+       [[ "$(readlink -f /etc/systemd/system/fwupd.service)" == "/dev/null" ]]; then
         fwupd_masked="yes"
     fi
 
-    if systemctl is-enabled fwupd-refresh.service 2>/dev/null | grep -q "masked"; then
+    if [[ -L /etc/systemd/system/fwupd-refresh.service ]] &&
+       [[ "$(readlink -f /etc/systemd/system/fwupd-refresh.service)" == "/dev/null" ]]; then
         refresh_masked="yes"
     fi
 
@@ -264,7 +267,7 @@ disable_fwupd() {
     fi
 
     # --------------------------------------------------------
-    # Если systemd не показывает masked — создаём маску вручную
+    # Если systemctl mask не создал маску — создаём вручную
     # --------------------------------------------------------
 
     if [[ "$fwupd_masked" != "yes" ]]; then
@@ -1356,6 +1359,8 @@ EOF
 
 install_remnanode() {
 
+    local AUTO_FIRST_Y="${1:-no}"
+
     msg_title "9. Установка RemnaNode"
 
     STATUS[9]="RUNNING"
@@ -1389,13 +1394,35 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    # Настоящий терминал.
-    # Автоматических ответов на вопросы установщика нет.
+    # ========================================================
+    # Пункт 11:
+    # первый вопрос получает автоматический y.
+    #
+    # После первого y:
+    # весь дальнейший ввод идёт от пользователя через /dev/tty.
+    #
+    # Обычный пункт 9:
+    # полностью интерактивный с первого вопроса.
+    # ========================================================
 
-    bash "$node_installer" @ install \
-        </dev/tty \
-        >/dev/tty \
-        2>/dev/tty
+    if [[ "$AUTO_FIRST_Y" == "yes" ]]; then
+
+        bash "$node_installer" @ install \
+            < <(
+                printf 'y\n'
+                cat /dev/tty
+            ) \
+            >/dev/tty \
+            2>/dev/tty
+
+    else
+
+        bash "$node_installer" @ install \
+            </dev/tty \
+            >/dev/tty \
+            2>/dev/tty
+
+    fi
 
     local installer_rc=$?
 
@@ -1456,9 +1483,6 @@ install_selfsteal() {
     msg_info "Запуск Selfsteal installer..."
     echo
 
-    # Настоящий терминал.
-    # Автоматических ответов на вопросы установщика нет.
-
     bash "$selfsteal_installer" \
         </dev/tty \
         >/dev/tty \
@@ -1492,31 +1516,31 @@ show_report_1_to_8() {
 
     msg_title "Отчёт по пунктам 1-8"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-52s │ %s\n" "#" "Задача" "Статус"
+    echo "─────┼──────────────────────────────────────────────────────┼────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-52s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update + доступные обновления"
+    printf "%-4s │ %-52s │ " "2" "apt update + доступные обновления"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-52s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-52s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-52s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-52s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-52s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-52s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
     echo
@@ -1530,40 +1554,40 @@ show_final_report() {
 
     msg_title "Итоговый отчёт"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-52s │ %s\n" "#" "Задача" "Статус"
+    echo "─────┼──────────────────────────────────────────────────────┼────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-52s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update"
+    printf "%-4s │ %-52s │ " "2" "apt update"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-52s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-52s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-52s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-52s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-52s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-52s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
-    printf "%-4s %-48s " "9" "RemnaNode"
+    printf "%-4s │ %-52s │ " "9" "RemnaNode"
     status_text "${STATUS[9]}"
 
-    printf "%-4s %-48s " "10" "Selfsteal"
+    printf "%-4s │ %-52s │ " "10" "Selfsteal"
     status_text "${STATUS[10]}"
 
-    printf "%-4s %-48s " "11" "Установка 1-9"
+    printf "%-4s │ %-52s │ " "11" "Установка 1-9"
     status_text "${STATUS[11]}"
 
     echo
@@ -1714,15 +1738,15 @@ install_1_to_9() {
 
     show_report_1_to_8
 
-    echo
-    msg_info "Переход к установке RemnaNode..."
-    echo
-
     # ========================================================
     # 9
     # ========================================================
 
-    install_remnanode
+    install_remnanode yes
+
+    # ========================================================
+    # Installation 1-9 finished
+    # ========================================================
 
     STATUS[11]="OK"
 
@@ -1817,7 +1841,7 @@ while true; do
             ;;
 
         9)
-            install_remnanode
+            install_remnanode no
             pause_menu
             ;;
 
@@ -1846,3 +1870,4 @@ while true; do
     esac
 
 done
+```
