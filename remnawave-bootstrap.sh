@@ -624,10 +624,6 @@ EOF
 
 ensure_zapret_volume() {
 
-    # --------------------------------------------------------
-    # Проверяем наличие compose-файла
-    # --------------------------------------------------------
-
     if [[ ! -f "$REMNANODE_COMPOSE" ]]; then
 
         msg_warn "Docker Compose RemnaNode не найден:"
@@ -743,10 +739,6 @@ PY
 
     fi
 
-    # --------------------------------------------------------
-    # Проверка и перезапуск
-    # --------------------------------------------------------
-
     echo
     msg_info "Проверка Docker Compose..."
 
@@ -828,10 +820,6 @@ install_zapret() {
     echo
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
-
-    # ========================================================
-    # Добавляем volume в compose
-    # ========================================================
 
     if ensure_zapret_volume; then
         STATUS[5]="OK"
@@ -1378,7 +1366,6 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    # Проверяем, нужно ли автоматически подтверждать первый вопрос.
     # Автоподтверждение работает только если:
     # 1. Передан параметр AUTO_CONFIRM="yes" (вызов из install_1_to_9)
     # 2. Директория /opt/remnanode уже существует (RemnaNode уже установлен)
@@ -1394,13 +1381,9 @@ install_remnanode() {
 
     echo
 
-    # Используем Python с pty для создания псевдотерминала.
-    # Работаем напрямую с /dev/tty, потому что скрипт запущен
-    # через tee и fd 0/1 — это пайпы, а не терминал.
-    #
-    # Авто-выход: если в выводе установщика появляется строка
-    # "Container remnanode Started", ждём 2 секунды и выходим
-    # с кодом 0 (успех).
+    # Python с pty создаёт псевдотерминал, работает напрямую с /dev/tty
+    # (обходя tee). Ищет строку "✔ Container remnanode Started"
+    # (с очисткой ANSI-кодов), ждёт 2 секунды и выходит с кодом 0.
 
     python3 - "$node_installer" "$should_auto_confirm" <<'PYEOF'
 import pty
@@ -1411,6 +1394,7 @@ import time
 import termios
 import tty
 import signal
+import re
 
 installer = sys.argv[1]
 auto_confirm = sys.argv[2] == "yes"
@@ -1418,35 +1402,37 @@ auto_confirm = sys.argv[2] == "yes"
 pid, fd = pty.fork()
 
 if pid == 0:
-    # Дочерний процесс — запускаем установщик
     os.execvp("bash", ["bash", installer, "@", "install"])
 
-# Открываем /dev/tty напрямую (обходим tee)
 tty_fd = os.open("/dev/tty", os.O_RDWR)
 
-# Если нужно автоподтверждение — ждём и отправляем 'y'
 if auto_confirm:
     time.sleep(1)
     os.write(fd, b"y\n")
 
-# Сохраняем настройки терминала
 old_tty = termios.tcgetattr(tty_fd)
 
 buffer = b""
 started_detected = False
 start_time = None
-installer_exited = False
-installer_status = 0
+
+# Регулярка для удаления ANSI escape-последовательностей
+ansi_re = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
+
+# Ищем: ✔ (UTF-8: \xe2\x9c\x94) + "Container remnanode Started"
+CHECK_MARK_UTF8 = b'\xe2\x9c\x94'
+started_re = re.compile(
+    CHECK_MARK_UTF8 + rb'\s*Container\s+remnanode\s+Started',
+    re.IGNORECASE
+)
 
 try:
-    # Переводим терминал в raw mode
     tty.setraw(tty_fd)
 
     while True:
         r, _, _ = select.select([tty_fd, fd], [], [], 0.1)
 
         if tty_fd in r:
-            # Читаем ввод с клавиатуры
             try:
                 data = os.read(tty_fd, 1024)
             except:
@@ -1456,33 +1442,29 @@ try:
             os.write(fd, data)
 
         if fd in r:
-            # Читаем вывод установщика
             try:
                 data = os.read(fd, 1024)
             except:
-                installer_exited = True
                 break
             if not data:
-                installer_exited = True
                 break
             os.write(tty_fd, data)
 
-            # Накапливаем буфер и ищем маркер
             buffer += data
-            if len(buffer) > 2000:
-                buffer = buffer[-1000:]
+            if len(buffer) > 4096:
+                buffer = buffer[-2048:]
 
-            if not started_detected and b"Container remnanode Started" in buffer:
-                started_detected = True
-                start_time = time.time()
+            if not started_detected:
+                clean = ansi_re.sub(b'', buffer)
+                if started_re.search(clean):
+                    started_detected = True
+                    start_time = time.time()
 
-        # Проверяем, прошло ли 2 секунды после детекта маркера
         if started_detected and start_time is not None:
             if time.time() - start_time >= 2.0:
                 break
 
 finally:
-    # Восстанавливаем настройки терминала
     try:
         termios.tcsetattr(tty_fd, termios.TCSADRAIN, old_tty)
     except:
@@ -1492,7 +1474,6 @@ finally:
     except:
         pass
 
-# Если вышли по маркеру — убиваем установщик и выходим с 0
 if started_detected:
     try:
         os.kill(pid, signal.SIGTERM)
@@ -1509,7 +1490,6 @@ if started_detected:
         pass
     sys.exit(0)
 
-# Иначе — установщик завершился сам, возвращаем его exit code
 try:
     _, status = os.waitpid(pid, 0)
     sys.exit(os.WEXITSTATUS(status))
@@ -1575,9 +1555,6 @@ install_selfsteal() {
     echo
     msg_info "Запуск Selfsteal installer..."
     echo
-
-    # Настоящий терминал.
-    # Автоматических ответов на вопросы установщика нет.
 
     bash "$selfsteal_installer" \
         </dev/tty \
@@ -1755,7 +1732,6 @@ install_1_to_9() {
 
     if [[ "$run_warp" == "yes" ]]; then
 
-        # Через пункт 11 TOS принимается автоматически.
         install_warp yes
 
     else
@@ -1804,8 +1780,6 @@ install_1_to_9() {
     # 9
     # ========================================================
 
-    # Передаём "yes" для автоподтверждения первого вопроса,
-    # если /opt/remnanode уже существует.
     install_remnanode yes
 
     # ========================================================
@@ -1837,7 +1811,6 @@ install_1_to_9() {
     msg_ok "Установка 1-9 завершена."
     echo
 
-    # Не возвращаемся в меню.
     exit 0
 }
 
