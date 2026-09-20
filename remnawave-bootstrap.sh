@@ -1,3 +1,4 @@
+```bash
 #!/usr/bin/env bash
 
 set -o pipefail
@@ -1492,31 +1493,31 @@ show_report_1_to_8() {
 
     msg_title "Отчёт по пунктам 1-8"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-52s │ %s\n" "#" "Задача" "Статус"
+    printf '%s\n' "─────┼──────────────────────────────────────────────────────┼────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-52s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update + доступные обновления"
+    printf "%-4s │ %-52s │ " "2" "apt update + доступные обновления"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-52s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-52s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-52s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-52s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-52s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-52s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
     echo
@@ -1530,40 +1531,40 @@ show_final_report() {
 
     msg_title "Итоговый отчёт"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-52s │ %s\n" "#" "Задача" "Статус"
+    printf '%s\n' "─────┼──────────────────────────────────────────────────────┼────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-52s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update"
+    printf "%-4s │ %-52s │ " "2" "apt update"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-52s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-52s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-52s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-52s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-52s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-52s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
-    printf "%-4s %-48s " "9" "RemnaNode"
+    printf "%-4s │ %-52s │ " "9" "RemnaNode"
     status_text "${STATUS[9]}"
 
-    printf "%-4s %-48s " "10" "Selfsteal"
+    printf "%-4s │ %-52s │ " "10" "Selfsteal"
     status_text "${STATUS[10]}"
 
-    printf "%-4s %-48s " "11" "Установка 1-9"
+    printf "%-4s │ %-52s │ " "11" "Установка 1-9"
     status_text "${STATUS[11]}"
 
     echo
@@ -1846,3 +1847,4 @@ while true; do
     esac
 
 done
+```
