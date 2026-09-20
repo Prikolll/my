@@ -1454,8 +1454,8 @@ install_remnanode() {
     echo
 
     # Используем Python с pty для создания псевдотерминала.
-    # Это решает проблему конкуренции за /dev/tty между
-    # установщиком и внешними процессами.
+    # Работаем напрямую с /dev/tty, потому что скрипт запущен
+    # через tee и fd 0/1 — это пайпы, а не терминал.
     # Автоматически отправляем 'y' на первый вопрос,
     # затем передаём управление пользователю.
 
@@ -1476,24 +1476,29 @@ if pid == 0:
     # Дочерний процесс — запускаем установщик
     os.execvp("bash", ["bash", installer, "@", "install"])
 
-# Родительский процесс
+# Открываем /dev/tty напрямую (обходим tee)
+tty_fd = os.open("/dev/tty", os.O_RDWR)
+
 # Ждём появления первого вопроса и отправляем 'y'
 time.sleep(1)
 os.write(fd, b"y\n")
 
 # Сохраняем настройки терминала
-old_tty = termios.tcgetattr(0)
+old_tty = termios.tcgetattr(tty_fd)
 
 try:
     # Переводим терминал в raw mode
-    tty.setraw(0)
+    tty.setraw(tty_fd)
 
     while True:
-        r, _, _ = select.select([0, fd], [], [])
+        r, _, _ = select.select([tty_fd, fd], [], [])
 
-        if 0 in r:
+        if tty_fd in r:
             # Читаем ввод с клавиатуры
-            data = os.read(0, 1024)
+            try:
+                data = os.read(tty_fd, 1024)
+            except:
+                break
             if not data:
                 break
             os.write(fd, data)
@@ -1506,11 +1511,13 @@ try:
                 break
             if not data:
                 break
-            os.write(1, data)
+            # Выводим в /dev/tty напрямую
+            os.write(tty_fd, data)
 
 finally:
     # Восстанавливаем настройки терминала
-    termios.tcsetattr(0, termios.TCSADRAIN, old_tty)
+    termios.tcsetattr(tty_fd, termios.TCSADRAIN, old_tty)
+    os.close(tty_fd)
 
 # Получаем exit code установщика
 _, status = os.waitpid(pid, 0)
