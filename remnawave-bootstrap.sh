@@ -1,3 +1,4 @@
+```bash
 #!/usr/bin/env bash
 
 set -o pipefail
@@ -131,7 +132,7 @@ done
 
 pause_menu() {
     echo
-    read -r -p "Нажмите Enter для возврата в меню..." _
+    read -r -p "Нажмите Enter для возврата в меню..." _ </dev/tty
 }
 
 ask_yes_no() {
@@ -141,7 +142,7 @@ ask_yes_no() {
     while true; do
 
         echo -ne "${YELLOW}${question} [y/N]: ${RESET}"
-        read -r answer
+        read -r answer </dev/tty
 
         case "${answer,,}" in
             y|yes)
@@ -238,10 +239,6 @@ disable_fwupd() {
 
     systemctl daemon-reload
 
-    # --------------------------------------------------------
-    # Проверяем реальное состояние
-    # --------------------------------------------------------
-
     local fwupd_masked="no"
     local refresh_masked="no"
     local fwupd_active="no"
@@ -263,10 +260,6 @@ disable_fwupd() {
         refresh_active="yes"
     fi
 
-    # --------------------------------------------------------
-    # Если systemd не показывает masked — создаём маску вручную
-    # --------------------------------------------------------
-
     if [[ "$fwupd_masked" != "yes" ]]; then
 
         rm -f /etc/systemd/system/fwupd.service
@@ -286,10 +279,6 @@ disable_fwupd() {
         systemctl daemon-reload
 
     fi
-
-    # --------------------------------------------------------
-    # Финальная проверка
-    # --------------------------------------------------------
 
     fwupd_masked="no"
     refresh_masked="no"
@@ -613,10 +602,6 @@ install_zapret() {
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
 
-    # ========================================================
-    # Docker Compose
-    # ========================================================
-
     if [[ -f "$REMNANODE_COMPOSE" ]]; then
 
         echo
@@ -639,17 +624,9 @@ lines = compose.read_text().splitlines()
 
 mount = "/opt/remnanode/xray/share/zapret.dat:/usr/local/bin/zapret.dat:ro"
 
-# ------------------------------------------------------------
-# Already exists
-# ------------------------------------------------------------
-
 if any(mount in line for line in lines):
     print("Volume zapret.dat уже присутствует.")
     sys.exit(0)
-
-# ------------------------------------------------------------
-# Find remnanode service
-# ------------------------------------------------------------
 
 service_index = None
 service_indent = None
@@ -667,10 +644,6 @@ if service_index is None:
     print("Не найден сервис remnanode в compose.")
     sys.exit(2)
 
-# ------------------------------------------------------------
-# Find end of service
-# ------------------------------------------------------------
-
 service_end = len(lines)
 
 for i in range(service_index + 1, len(lines)):
@@ -686,10 +659,6 @@ for i in range(service_index + 1, len(lines)):
         service_end = i
         break
 
-# ------------------------------------------------------------
-# Find volumes
-# ------------------------------------------------------------
-
 volumes_index = None
 
 for i in range(service_index + 1, service_end):
@@ -704,10 +673,6 @@ for i in range(service_index + 1, service_end):
     if indent == service_indent + 2 and line.strip() == "volumes:":
         volumes_index = i
         break
-
-# ------------------------------------------------------------
-# Add mount
-# ------------------------------------------------------------
 
 if volumes_index is not None:
 
@@ -790,6 +755,7 @@ PY
 
                     echo
                     msg_warn "Backup:"
+
                     ls -1t \
                         "${REMNANODE_COMPOSE}.bak."* \
                         2>/dev/null | head -1 || true
@@ -821,6 +787,7 @@ PY
         echo
         msg_warn "Docker Compose RemnaNode не найден:"
         echo "$REMNANODE_COMPOSE"
+
         echo
         echo "Zapret.dat установлен отдельно."
 
@@ -1055,26 +1022,48 @@ install_warp() {
 
     sed -i -E '/^Address = .*:/d' "$WARP1_CONF"
     sed -i '/^Address = /d' "$WARP1_CONF"
-    sed -i '/^\[Interface\]/a Address = 172.16.0.2/32' "$WARP1_CONF"
+
+    sed -i \
+        '/^\[Interface\]/a Address = 172.16.0.2/32' \
+        "$WARP1_CONF"
 
     sed -i '/^Table = /d' "$WARP1_CONF"
 
     if grep -q '^MTU = ' "$WARP1_CONF"; then
-        sed -i '/^MTU = /a Table = off' "$WARP1_CONF"
+
+        sed -i \
+            '/^MTU = /a Table = off' \
+            "$WARP1_CONF"
+
     else
-        sed -i '/^\[Interface\]/a Table = off' "$WARP1_CONF"
+
+        sed -i \
+            '/^\[Interface\]/a Table = off' \
+            "$WARP1_CONF"
+
     fi
 
     sed -i '/^PersistentKeepalive = /d' "$WARP1_CONF"
 
     if grep -q '^Endpoint = ' "$WARP1_CONF"; then
-        sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP1_CONF"
+
+        sed -i \
+            '/^Endpoint = /a PersistentKeepalive = 25' \
+            "$WARP1_CONF"
+
     else
-        sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP1_CONF"
+
+        sed -i \
+            '/^\[Peer\]/a PersistentKeepalive = 25' \
+            "$WARP1_CONF"
+
     fi
 
     sed -i '/^AllowedIPs = /d' "$WARP1_CONF"
-    sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP1_CONF"
+
+    sed -i \
+        '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' \
+        "$WARP1_CONF"
 
     # ========================================================
     # WARP 2 configuration
@@ -1092,26 +1081,48 @@ install_warp() {
 
     sed -i -E '/^Address = .*:/d' "$WARP2_CONF"
     sed -i '/^Address = /d' "$WARP2_CONF"
-    sed -i '/^\[Interface\]/a Address = 172.16.0.3/32' "$WARP2_CONF"
+
+    sed -i \
+        '/^\[Interface\]/a Address = 172.16.0.3/32' \
+        "$WARP2_CONF"
 
     sed -i '/^Table = /d' "$WARP2_CONF"
 
     if grep -q '^MTU = ' "$WARP2_CONF"; then
-        sed -i '/^MTU = /a Table = off' "$WARP2_CONF"
+
+        sed -i \
+            '/^MTU = /a Table = off' \
+            "$WARP2_CONF"
+
     else
-        sed -i '/^\[Interface\]/a Table = off' "$WARP2_CONF"
+
+        sed -i \
+            '/^\[Interface\]/a Table = off' \
+            "$WARP2_CONF"
+
     fi
 
     sed -i '/^PersistentKeepalive = /d' "$WARP2_CONF"
 
     if grep -q '^Endpoint = ' "$WARP2_CONF"; then
-        sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP2_CONF"
+
+        sed -i \
+            '/^Endpoint = /a PersistentKeepalive = 25' \
+            "$WARP2_CONF"
+
     else
-        sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP2_CONF"
+
+        sed -i \
+            '/^\[Peer\]/a PersistentKeepalive = 25' \
+            "$WARP2_CONF"
+
     fi
 
     sed -i '/^AllowedIPs = /d' "$WARP2_CONF"
-    sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP2_CONF"
+
+    sed -i \
+        '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' \
+        "$WARP2_CONF"
 
     chmod 600 "$WARP1_CONF" "$WARP2_CONF"
 
@@ -1175,9 +1186,11 @@ EOF
         wg show wgcf2 || true
 
         echo
+
         ip addr show wgcf1 || true
 
         echo
+
         ip addr show wgcf2 || true
 
         if ip link show wgcf1 >/dev/null 2>&1 &&
@@ -1356,6 +1369,8 @@ EOF
 
 install_remnanode() {
 
+    local AUTO_FIRST_Y="${1:-no}"
+
     msg_title "9. Установка RemnaNode"
 
     STATUS[9]="RUNNING"
@@ -1378,6 +1393,7 @@ install_remnanode() {
 
         STATUS[9]="FAILED"
         return
+
     fi
 
     # Fix CRLF
@@ -1389,13 +1405,34 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    # Настоящий терминал.
-    # Автоматических ответов на вопросы установщика нет.
+    # ========================================================
+    # Если RemnaNode запущен отдельно:
+    #
+    #   полностью интерактивный режим
+    #
+    # Если запущен через пункт 11:
+    #
+    #   первый ответ = y автоматически
+    #   весь последующий ввод = только пользователь
+    # ========================================================
 
-    bash "$node_installer" @ install \
-        </dev/tty \
-        >/dev/tty \
-        2>/dev/tty
+    if [[ "$AUTO_FIRST_Y" == "yes" ]]; then
+
+        {
+            printf 'y\n'
+            cat /dev/tty
+        } | bash "$node_installer" @ install \
+            >/dev/tty \
+            2>/dev/tty
+
+    else
+
+        bash "$node_installer" @ install \
+            </dev/tty \
+            >/dev/tty \
+            2>/dev/tty
+
+    fi
 
     local installer_rc=$?
 
@@ -1445,6 +1482,7 @@ install_selfsteal() {
 
         STATUS[10]="FAILED"
         return
+
     fi
 
     # Fix CRLF
@@ -1455,9 +1493,6 @@ install_selfsteal() {
     echo
     msg_info "Запуск Selfsteal installer..."
     echo
-
-    # Настоящий терминал.
-    # Автоматических ответов на вопросы установщика нет.
 
     bash "$selfsteal_installer" \
         </dev/tty \
@@ -1492,31 +1527,31 @@ show_report_1_to_8() {
 
     msg_title "Отчёт по пунктам 1-8"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-50s │ %-10s\n" "#" "Задача" "Статус"
+    echo "─────┼────────────────────────────────────────────────────┼────────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-50s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update + доступные обновления"
+    printf "%-4s │ %-50s │ " "2" "apt update + доступные обновления"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-50s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-50s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-50s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-50s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-50s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-50s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
     echo
@@ -1530,40 +1565,40 @@ show_final_report() {
 
     msg_title "Итоговый отчёт"
 
-    printf "%-4s %-48s %s\n" "#" "Задача" "Статус"
-    echo "---------------------------------------------------------------------"
+    printf "%-4s │ %-50s │ %-10s\n" "#" "Задача" "Статус"
+    echo "─────┼────────────────────────────────────────────────────┼────────────"
 
-    printf "%-4s %-48s " "1" "Отключить fwupd"
+    printf "%-4s │ %-50s │ " "1" "Отключить fwupd"
     status_text "${STATUS[1]}"
 
-    printf "%-4s %-48s " "2" "apt update"
+    printf "%-4s │ %-50s │ " "2" "apt update"
     status_text "${STATUS[2]}"
 
-    printf "%-4s %-48s " "3" "Отключить IPv6"
+    printf "%-4s │ %-50s │ " "3" "Отключить IPv6"
     status_text "${STATUS[3]}"
 
-    printf "%-4s %-48s " "4" "BBR / Network sysctl"
+    printf "%-4s │ %-50s │ " "4" "BBR / Network sysctl"
     status_text "${STATUS[4]}"
 
-    printf "%-4s %-48s " "5" "Zapret.dat"
+    printf "%-4s │ %-50s │ " "5" "Zapret.dat"
     status_text "${STATUS[5]}"
 
-    printf "%-4s %-48s " "6" "2 WARP профиля"
+    printf "%-4s │ %-50s │ " "6" "2 WARP профиля"
     status_text "${STATUS[6]}"
 
-    printf "%-4s %-48s " "7" "UFW"
+    printf "%-4s │ %-50s │ " "7" "UFW"
     status_text "${STATUS[7]}"
 
-    printf "%-4s %-48s " "8" "Fail2ban"
+    printf "%-4s │ %-50s │ " "8" "Fail2ban"
     status_text "${STATUS[8]}"
 
-    printf "%-4s %-48s " "9" "RemnaNode"
+    printf "%-4s │ %-50s │ " "9" "RemnaNode"
     status_text "${STATUS[9]}"
 
-    printf "%-4s %-48s " "10" "Selfsteal"
+    printf "%-4s │ %-50s │ " "10" "Selfsteal"
     status_text "${STATUS[10]}"
 
-    printf "%-4s %-48s " "11" "Установка 1-9"
+    printf "%-4s │ %-50s │ " "11" "Установка 1-9"
     status_text "${STATUS[11]}"
 
     echo
@@ -1673,7 +1708,6 @@ install_1_to_9() {
 
     if [[ "$run_warp" == "yes" ]]; then
 
-        # Через пункт 11 TOS принимается автоматически.
         install_warp yes
 
     else
@@ -1714,15 +1748,14 @@ install_1_to_9() {
 
     show_report_1_to_8
 
-    echo
-    msg_info "Переход к установке RemnaNode..."
-    echo
-
     # ========================================================
-    # 9
+    # 9 RemnaNode
+    #
+    # Первый ответ установщика автоматически = y.
+    # После него весь ввод идёт непосредственно от пользователя.
     # ========================================================
 
-    install_remnanode
+    install_remnanode yes
 
     STATUS[11]="OK"
 
@@ -1736,7 +1769,6 @@ install_1_to_9() {
     msg_ok "Установка 1-9 завершена."
     echo
 
-    # Не возвращаемся в меню.
     exit 0
 }
 
@@ -1772,7 +1804,7 @@ while true; do
     echo
 
     echo -ne "${WHITE}Выберите пункт: ${RESET}"
-    read -r choice
+    read -r choice </dev/tty
 
     case "$choice" in
 
@@ -1817,7 +1849,7 @@ while true; do
             ;;
 
         9)
-            install_remnanode
+            install_remnanode no
             pause_menu
             ;;
 
@@ -1846,3 +1878,4 @@ while true; do
     esac
 
 done
+```
