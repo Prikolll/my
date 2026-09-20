@@ -212,6 +212,99 @@ status_text() {
 }
 
 # ============================================================
+# DPKG lock helpers
+# ============================================================
+
+wait_for_dpkg_lock() {
+
+    local max_wait="${1:-600}"
+    local waited=0
+
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+
+        if [[ $waited -ge $max_wait ]]; then
+
+            msg_error "Превышено максимальное время ожидания блокировки dpkg (${max_wait}с)."
+            return 1
+
+        fi
+
+        if [[ $waited -eq 0 ]]; then
+
+            msg_warn "Обнаружена блокировка dpkg. Ожидание завершения другого процесса..."
+
+            local holder_pid
+            holder_pid=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | awk '{print $1}')
+
+            if [[ -n "$holder_pid" ]]; then
+
+                local holder_cmd
+                holder_cmd=$(ps -p "$holder_pid" -o comm= 2>/dev/null || echo "unknown")
+
+                msg_info "Блокирующий процесс: PID $holder_pid ($holder_cmd)"
+
+            fi
+
+        fi
+
+        sleep 5
+        waited=$((waited + 5))
+
+        if [[ $((waited % 30)) -eq 0 ]]; then
+
+            msg_info "Ожидание: ${waited}с / ${max_wait}с..."
+
+        fi
+
+    done
+
+    if [[ $waited -gt 0 ]]; then
+
+        msg_ok "Блокировка dpkg освобождена (ожидали ${waited}с)."
+
+    fi
+
+    return 0
+}
+
+apt_install_with_retry() {
+
+    if ! wait_for_dpkg_lock 600; then
+        return 1
+    fi
+
+    local max_attempts=3
+    local attempt=1
+
+    while [[ $attempt -le $max_attempts ]]; do
+
+        if apt-get install -y "$@"; then
+            return 0
+        fi
+
+        if [[ $attempt -lt $max_attempts ]]; then
+
+            msg_warn "Попытка $attempt/$max_attempts не удалась. Ожидание блокировки dpkg..."
+
+            if ! wait_for_dpkg_lock 300; then
+                return 1
+            fi
+
+            attempt=$((attempt + 1))
+
+        else
+
+            msg_error "Не удалось установить пакеты после $max_attempts попыток."
+            return 1
+
+        fi
+
+    done
+
+    return 1
+}
+
+# ============================================================
 # Table formatting helpers
 # ============================================================
 
@@ -403,6 +496,11 @@ apt_update_show_upgrades() {
     msg_title "2. apt update + доступные обновления"
 
     STATUS[2]="RUNNING"
+
+    if ! wait_for_dpkg_lock 600; then
+        STATUS[2]="FAILED"
+        return 1
+    fi
 
     msg_info "Выполняется apt-get update..."
     echo
@@ -744,7 +842,7 @@ PY
 
     if ! command -v docker >/dev/null 2>&1; then
 
-        msg_warn "Docker не установлен."
+        msg_warn "Docker не установлен. Volume добавлен в compose, но контейнеры не перезапускались."
         return 0
 
     fi
@@ -821,11 +919,27 @@ install_zapret() {
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
 
+    # ========================================================
+    # Пытаемся добавить volume в compose.
+    # Если Docker ещё не установлен — это не ошибка.
+    # Файл zapret.dat уже на месте, volume добавим позже
+    # после установки RemnaNode (пункт 11).
+    # ========================================================
+
     if ensure_zapret_volume; then
-        STATUS[5]="OK"
+
+        msg_ok "Volume zapret.dat добавлен в compose."
+
     else
-        STATUS[5]="FAILED"
+
+        msg_warn "Volume zapret.dat не добавлен в compose (Docker/RemnaNode ещё не установлен)."
+        msg_info "Файл zapret.dat установлен, volume будет добавлен после установки RemnaNode."
+
     fi
+
+    # Файл zapret.dat успешно скачан и установлен — это OK.
+    # Отсутствие Docker на данном этапе не считается провалом.
+    STATUS[5]="OK"
 }
 
 # ============================================================
@@ -842,7 +956,7 @@ install_warp() {
 
     msg_info "Установка необходимых пакетов..."
 
-    if ! apt-get install -y wireguard curl; then
+    if ! apt_install_with_retry wireguard curl; then
 
         echo
         msg_error "Ошибка установки wireguard/curl."
@@ -1194,7 +1308,7 @@ configure_ufw() {
 
     msg_info "Установка UFW..."
 
-    if ! apt-get install -y ufw; then
+    if ! apt_install_with_retry ufw; then
 
         echo
         msg_error "Ошибка установки UFW."
@@ -1247,7 +1361,7 @@ install_fail2ban() {
 
     msg_info "Установка Fail2ban..."
 
-    if ! apt-get install -y fail2ban; then
+    if ! apt_install_with_retry fail2ban; then
 
         echo
         msg_error "Ошибка установки Fail2ban."
@@ -1337,6 +1451,11 @@ install_remnanode() {
 
     STATUS[9]="RUNNING"
 
+    if ! wait_for_dpkg_lock 600; then
+        STATUS[9]="FAILED"
+        return 1
+    fi
+
     local node_installer
 
     node_installer=$(mktemp)
@@ -1366,10 +1485,6 @@ install_remnanode() {
     msg_info "Запуск RemnaNode installer..."
     echo
 
-    # Автоподтверждение работает только если:
-    # 1. Передан параметр AUTO_CONFIRM="yes" (вызов из install_1_to_9)
-    # 2. Директория /opt/remnanode уже существует (RemnaNode уже установлен)
-
     local should_auto_confirm="no"
 
     if [[ "$AUTO_CONFIRM" == "yes" ]] && [[ -d "$REMNANODE_DIR" ]]; then
@@ -1380,10 +1495,6 @@ install_remnanode() {
     fi
 
     echo
-
-    # Python с pty создаёт псевдотерминал, работает напрямую с /dev/tty
-    # (обходя tee). Ищет строку "✔ Container remnanode Started"
-    # (с очисткой ANSI-кодов), ждёт 2 секунды и выходит с кодом 0.
 
     python3 - "$node_installer" "$should_auto_confirm" <<'PYEOF'
 import pty
@@ -1416,10 +1527,8 @@ buffer = b""
 started_detected = False
 start_time = None
 
-# Регулярка для удаления ANSI escape-последовательностей
 ansi_re = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
 
-# Ищем: ✔ (UTF-8: \xe2\x9c\x94) + "Container remnanode Started"
 CHECK_MARK_UTF8 = b'\xe2\x9c\x94'
 started_re = re.compile(
     CHECK_MARK_UTF8 + rb'\s*Container\s+remnanode\s+Started',
@@ -1526,6 +1635,11 @@ install_selfsteal() {
     msg_title "10. Установка Selfsteal"
 
     STATUS[10]="RUNNING"
+
+    if ! wait_for_dpkg_lock 600; then
+        STATUS[10]="FAILED"
+        return 1
+    fi
 
     local selfsteal_installer
 
@@ -1783,8 +1897,10 @@ install_1_to_9() {
     install_remnanode yes
 
     # ========================================================
-    # После установки RemnaNode — добавляем volume zapret.dat,
-    # если ранее была подтверждена установка Zapret.
+    # После установки RemnaNode — добавляем volume zapret.dat
+    # в compose, если ранее была подтверждена установка Zapret.
+    # К этому моменту Docker уже установлен (установщиком RemnaNode),
+    # поэтому volume будет добавлен и контейнеры перезапущены.
     # ========================================================
 
     if [[ "$run_zapret" == "yes" ]] && [[ "${STATUS[9]}" == "OK" ]]; then
