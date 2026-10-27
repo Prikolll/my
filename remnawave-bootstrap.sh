@@ -171,18 +171,37 @@ ask_yes_no() {
 }
 
 ask_warp_count() {
+    local min_count=1
+    for ((j = 1; j <= 250; j++)); do
+        if [[ -f "${WARP_CONF_DIR}/wgcf${j}.conf" ]]; then
+            min_count=$((j + 1))
+        else
+            break
+        fi
+    done
+
+    local default_count=2
+    if [[ $min_count -gt 2 ]]; then
+        default_count=$min_count
+    elif [[ $min_count -eq 2 ]]; then
+        default_count=3
+    fi
+
     local count
-
     while true; do
-        echo -ne "${YELLOW}Сколько профилей WARP создать? (1-250) [по умолчанию: 2]: ${RESET}"
+        if [[ $min_count -gt 1 ]]; then
+            echo -ne "${YELLOW}Уже создано профилей: $((min_count - 1)). Укажите общее количество профилей (от ${min_count} до 250) [по умолчанию: ${default_count}]: ${RESET}"
+        else
+            echo -ne "${YELLOW}Сколько профилей WARP создать? (1-250) [по умолчанию: 2]: ${RESET}"
+        fi
         read -r count
-        count="${count:-2}"
+        count="${count:-$default_count}"
 
-        if [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge 1 && "$count" -le 250 ]]; then
+        if [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge $min_count && "$count" -le 250 ]]; then
             WARP_COUNT="$count"
             return 0
         else
-            msg_warn "Пожалуйста, введите целое число от 1 до 250."
+            msg_warn "Пожалуйста, введите целое число от ${min_count} до 250."
         fi
     done
 }
@@ -976,7 +995,23 @@ install_warp() {
         ask_warp_count
     fi
 
-    msg_title "6. Установка и настройка WARP профилей (${WARP_COUNT} шт.)"
+    # Determine existing max index to support resuming/appending
+    local max_existing=0
+    for ((j = 1; j <= 250; j++)); do
+        if [[ -f "${WARP_CONF_DIR}/wgcf${j}.conf" ]]; then
+            max_existing=$j
+        else
+            break
+        fi
+    done
+
+    if [[ $WARP_COUNT -lt $max_existing ]]; then
+        WARP_COUNT=$max_existing
+    fi
+
+    local start_index=$((max_existing + 1))
+
+    msg_title "6. Установка и настройка WARP профилей (Всего: ${WARP_COUNT}, создаем с ${start_index})"
 
     STATUS[6]="RUNNING"
 
@@ -1013,7 +1048,7 @@ install_warp() {
 
     mkdir -p "$WARP_CONF_DIR"
 
-    for ((i = 1; i <= WARP_COUNT; i++)); do
+    for ((i = start_index; i <= WARP_COUNT; i++)); do
 
         local tmp_dir
         tmp_dir=$(mktemp -d)
@@ -1030,11 +1065,26 @@ install_warp() {
             return
         }
 
-        msg_info "Автоматическая регистрация профиля WARP ${i} (auto-accept TOS)..."
+        msg_info "Регистрация профиля WARP ${i} (с защитой от 429 Too Many Requests)..."
 
-        if ! yes | "$wgcf" register --accept-tos; then
+        local reg_success="false"
+        local reg_attempt=1
+        local max_reg_attempts=5
+
+        while [[ $reg_attempt -le $max_reg_attempts ]]; do
+            if "$wgcf" register --accept-tos; then
+                reg_success="true"
+                break
+            else
+                msg_warn "Лимит запросов Cloudflare (429). Ожидание 10 секунд перед попыткой $reg_attempt/$max_reg_attempts..."
+                sleep 10
+                reg_attempt=$((reg_attempt + 1))
+            fi
+        done
+
+        if [[ "$reg_success" != "true" ]]; then
             echo
-            msg_error "Ошибка регистрации WARP ${i}."
+            msg_error "Ошибка регистрации WARP ${i} после $max_reg_attempts попыток."
             cd /root || true
             rm -rf "$tmp_dir"
             STATUS[6]="FAILED"
@@ -1099,8 +1149,10 @@ install_warp() {
         chmod 600 "$conf_file"
 
         if [[ $i -lt $WARP_COUNT ]]; then
-            msg_info "Пауза 2 секунды перед созданием следующего профиля..."
-            sleep 2
+            # Pause increases by 1 second after every 5 profiles (Base: 3s)
+            local current_pause=$(( 3 + (i - 1) / 5 ))
+            msg_info "Пауза ${current_pause} сек. перед созданием следующего профиля..."
+            sleep "$current_pause"
         fi
 
     done
