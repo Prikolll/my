@@ -20,10 +20,10 @@ REMNANODE_COMPOSE="${REMNANODE_DIR}/docker-compose.yml"
 ZAPRET_DIR="${REMNANODE_DIR}/xray/share"
 ZAPRET_FILE="${ZAPRET_DIR}/zapret.dat"
 
-WARP1_CONF="/etc/wireguard/wgcf1.conf"
-WARP2_CONF="/etc/wireguard/wgcf2.conf"
+WARP_CONF_DIR="/etc/wireguard"
 WARP_START="/usr/local/bin/warp_start.sh"
 WARP_SERVICE="/etc/systemd/system/warp.service"
+WARP_COUNT=2
 
 FAIL2BAN_JAIL="/etc/fail2ban/jail.local"
 
@@ -121,7 +121,7 @@ echo
 
 declare -A STATUS
 
-for i in {1..11}; do
+for i in {1..10}; do
     STATUS[$i]="NOT RUN"
 done
 
@@ -136,18 +136,30 @@ pause_menu() {
 
 ask_yes_no() {
     local question="$1"
+    local default="${2:-n}"
     local answer
+    local prompt_hint
+
+    if [[ "${default,,}" == "y" ]]; then
+        prompt_hint="[Y/n]"
+    else
+        prompt_hint="[y/N]"
+    fi
 
     while true; do
 
-        echo -ne "${YELLOW}${question} [y/N]: ${RESET}"
+        echo -ne "${YELLOW}${question} ${prompt_hint}: ${RESET}"
         read -r answer
+
+        if [[ -z "$answer" ]]; then
+            answer="$default"
+        fi
 
         case "${answer,,}" in
             y|yes)
                 return 0
                 ;;
-            n|no|"")
+            n|no)
                 return 1
                 ;;
             *)
@@ -155,6 +167,23 @@ ask_yes_no() {
                 ;;
         esac
 
+    done
+}
+
+ask_warp_count() {
+    local count
+
+    while true; do
+        echo -ne "${YELLOW}Сколько профилей WARP создать? (1-250) [по умолчанию: 2]: ${RESET}"
+        read -r count
+        count="${count:-2}"
+
+        if [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge 1 && "$count" -le 250 ]]; then
+            WARP_COUNT="$count"
+            return 0
+        else
+            msg_warn "Пожалуйста, введите целое число от 1 до 250."
+        fi
     done
 }
 
@@ -919,13 +948,6 @@ install_zapret() {
     msg_ok "Zapret.dat установлен:"
     echo "$ZAPRET_FILE"
 
-    # ========================================================
-    # Пытаемся добавить volume в compose.
-    # Если Docker ещё не установлен — это не ошибка.
-    # Файл zapret.dat уже на месте, volume добавим позже
-    # после установки RemnaNode (пункт 11).
-    # ========================================================
-
     if ensure_zapret_volume; then
 
         msg_ok "Volume zapret.dat добавлен в compose."
@@ -937,8 +959,6 @@ install_zapret() {
 
     fi
 
-    # Файл zapret.dat успешно скачан и установлен — это OK.
-    # Отсутствие Docker на данном этапе не считается провалом.
     STATUS[5]="OK"
 }
 
@@ -948,9 +968,15 @@ install_zapret() {
 
 install_warp() {
 
-    local AUTO_TOS="${1:-no}"
+    local COUNT_ARG="${1:-}"
 
-    msg_title "6. Установка и настройка 2 WARP профилей"
+    if [[ -n "$COUNT_ARG" ]]; then
+        WARP_COUNT="$COUNT_ARG"
+    else
+        ask_warp_count
+    fi
+
+    msg_title "6. Установка и настройка WARP профилей (${WARP_COUNT} шт.)"
 
     STATUS[6]="RUNNING"
 
@@ -985,246 +1011,115 @@ install_warp() {
     echo "wgcf:"
     "$wgcf" --version 2>/dev/null || true
 
-    local tmp1
-    local tmp2
+    mkdir -p "$WARP_CONF_DIR"
 
-    tmp1=$(mktemp -d)
-    tmp2=$(mktemp -d)
+    for ((i = 1; i <= WARP_COUNT; i++)); do
 
-    msg_step "Создание WARP профиля 1"
+        local tmp_dir
+        tmp_dir=$(mktemp -d)
+        local conf_file="${WARP_CONF_DIR}/wgcf${i}.conf"
+        local ip_octet=$((i + 1))
+        local local_ip="172.16.0.${ip_octet}/32"
 
-    cd "$tmp1" || {
+        msg_step "Создание WARP профиля ${i} из ${WARP_COUNT} (IP: ${local_ip})"
 
-        msg_error "Не удалось перейти в $tmp1."
-
-        rm -rf "$tmp1" "$tmp2"
-
-        STATUS[6]="FAILED"
-        return
-    }
-
-    if [[ "$AUTO_TOS" == "yes" ]]; then
-
-        msg_info "Автоматически принимаем WARP TOS..."
-
-        if ! "$wgcf" register --accept-tos; then
-
-            echo
-            msg_error "Ошибка регистрации WARP 1."
-
-            cd /root || true
-            rm -rf "$tmp1" "$tmp2"
-
+        cd "$tmp_dir" || {
+            msg_error "Не удалось перейти в $tmp_dir."
+            rm -rf "$tmp_dir"
             STATUS[6]="FAILED"
             return
+        }
 
-        fi
+        msg_info "Автоматическая регистрация профиля WARP ${i} (auto-accept TOS)..."
 
-    else
-
-        if ! "$wgcf" register; then
-
+        if ! yes | "$wgcf" register --accept-tos; then
             echo
-            msg_error "Ошибка регистрации WARP 1."
-
+            msg_error "Ошибка регистрации WARP ${i}."
             cd /root || true
-            rm -rf "$tmp1" "$tmp2"
-
+            rm -rf "$tmp_dir"
             STATUS[6]="FAILED"
             return
-
         fi
 
-    fi
-
-    if ! "$wgcf" generate; then
-
-        echo
-        msg_error "Ошибка генерации WARP 1."
-
-        cd /root || true
-        rm -rf "$tmp1" "$tmp2"
-
-        STATUS[6]="FAILED"
-        return
-
-    fi
-
-    if [[ ! -f wgcf-profile.conf ]]; then
-
-        echo
-        msg_error "wgcf-profile.conf для WARP 1 не найден."
-
-        cd /root || true
-        rm -rf "$tmp1" "$tmp2"
-
-        STATUS[6]="FAILED"
-        return
-
-    fi
-
-    cp wgcf-profile.conf "$WARP1_CONF"
-
-    msg_step "Создание WARP профиля 2"
-
-    cd "$tmp2" || {
-
-        msg_error "Не удалось перейти в $tmp2."
-
-        cd /root || true
-        rm -rf "$tmp1" "$tmp2"
-
-        STATUS[6]="FAILED"
-        return
-    }
-
-    if [[ "$AUTO_TOS" == "yes" ]]; then
-
-        msg_info "Автоматически принимаем WARP TOS..."
-
-        if ! "$wgcf" register --accept-tos; then
-
+        if ! "$wgcf" generate; then
             echo
-            msg_error "Ошибка регистрации WARP 2."
-
+            msg_error "Ошибка генерации WARP ${i}."
             cd /root || true
-            rm -rf "$tmp1" "$tmp2"
-
+            rm -rf "$tmp_dir"
             STATUS[6]="FAILED"
             return
-
         fi
 
-    else
-
-        if ! "$wgcf" register; then
-
+        if [[ ! -f wgcf-profile.conf ]]; then
             echo
-            msg_error "Ошибка регистрации WARP 2."
-
+            msg_error "wgcf-profile.conf для WARP ${i} не найден."
             cd /root || true
-            rm -rf "$tmp1" "$tmp2"
-
+            rm -rf "$tmp_dir"
             STATUS[6]="FAILED"
             return
-
         fi
 
-    fi
-
-    if ! "$wgcf" generate; then
-
-        echo
-        msg_error "Ошибка генерации WARP 2."
+        cp wgcf-profile.conf "$conf_file"
 
         cd /root || true
-        rm -rf "$tmp1" "$tmp2"
+        rm -rf "$tmp_dir"
 
-        STATUS[6]="FAILED"
-        return
+        msg_info "Настройка WARP ${i} (${conf_file} -> ${local_ip})..."
 
-    fi
+        if [[ ! -f "$conf_file" ]]; then
+            msg_error "Конфигурация WARP ${i} не найдена."
+            STATUS[6]="FAILED"
+            return
+        fi
 
-    if [[ ! -f wgcf-profile.conf ]]; then
+        sed -i -E '/^Address = .*:/d' "$conf_file"
+        sed -i '/^Address = /d' "$conf_file"
+        sed -i '/^DNS = /d' "$conf_file"
+        sed -i "/^\[Interface\]/a Address = ${local_ip}" "$conf_file"
 
-        echo
-        msg_error "wgcf-profile.conf для WARP 2 не найден."
+        sed -i '/^Table = /d' "$conf_file"
 
-        cd /root || true
-        rm -rf "$tmp1" "$tmp2"
+        if grep -q '^MTU = ' "$conf_file"; then
+            sed -i '/^MTU = /a Table = off' "$conf_file"
+        else
+            sed -i '/^\[Interface\]/a Table = off' "$conf_file"
+        fi
 
-        STATUS[6]="FAILED"
-        return
+        sed -i '/^PersistentKeepalive = /d' "$conf_file"
 
-    fi
+        if grep -q '^Endpoint = ' "$conf_file"; then
+            sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$conf_file"
+        else
+            sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$conf_file"
+        fi
 
-    cp wgcf-profile.conf "$WARP2_CONF"
+        sed -i '/^AllowedIPs = /d' "$conf_file"
+        sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$conf_file"
 
-    cd /root || true
+        chmod 600 "$conf_file"
 
-    rm -rf "$tmp1" "$tmp2"
+        if [[ $i -lt $WARP_COUNT ]]; then
+            msg_info "Пауза 2 секунды перед созданием следующего профиля..."
+            sleep 2
+        fi
 
-    msg_info "Настройка WARP 1..."
+    done
 
-    if [[ ! -f "$WARP1_CONF" ]]; then
+    msg_info "Создание WARP startup script ($WARP_START)..."
 
-        msg_error "Конфигурация WARP 1 не найдена."
-        STATUS[6]="FAILED"
-        return
-
-    fi
-
-    sed -i -E '/^Address = .*:/d' "$WARP1_CONF"
-    sed -i '/^Address = /d' "$WARP1_CONF"
-    sed -i '/^\[Interface\]/a Address = 172.16.0.2/32' "$WARP1_CONF"
-
-    sed -i '/^Table = /d' "$WARP1_CONF"
-
-    if grep -q '^MTU = ' "$WARP1_CONF"; then
-        sed -i '/^MTU = /a Table = off' "$WARP1_CONF"
-    else
-        sed -i '/^\[Interface\]/a Table = off' "$WARP1_CONF"
-    fi
-
-    sed -i '/^PersistentKeepalive = /d' "$WARP1_CONF"
-
-    if grep -q '^Endpoint = ' "$WARP1_CONF"; then
-        sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP1_CONF"
-    else
-        sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP1_CONF"
-    fi
-
-    sed -i '/^AllowedIPs = /d' "$WARP1_CONF"
-    sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP1_CONF"
-
-    msg_info "Настройка WARP 2..."
-
-    if [[ ! -f "$WARP2_CONF" ]]; then
-
-        msg_error "Конфигурация WARP 2 не найдена."
-        STATUS[6]="FAILED"
-        return
-
-    fi
-
-    sed -i -E '/^Address = .*:/d' "$WARP2_CONF"
-    sed -i '/^Address = /d' "$WARP2_CONF"
-    sed -i '/^\[Interface\]/a Address = 172.16.0.3/32' "$WARP2_CONF"
-
-    sed -i '/^Table = /d' "$WARP2_CONF"
-
-    if grep -q '^MTU = ' "$WARP2_CONF"; then
-        sed -i '/^MTU = /a Table = off' "$WARP2_CONF"
-    else
-        sed -i '/^\[Interface\]/a Table = off' "$WARP2_CONF"
-    fi
-
-    sed -i '/^PersistentKeepalive = /d' "$WARP2_CONF"
-
-    if grep -q '^Endpoint = ' "$WARP2_CONF"; then
-        sed -i '/^Endpoint = /a PersistentKeepalive = 25' "$WARP2_CONF"
-    else
-        sed -i '/^\[Peer\]/a PersistentKeepalive = 25' "$WARP2_CONF"
-    fi
-
-    sed -i '/^AllowedIPs = /d' "$WARP2_CONF"
-    sed -i '/^PublicKey = /a AllowedIPs = 0.0.0.0/0' "$WARP2_CONF"
-
-    chmod 600 "$WARP1_CONF" "$WARP2_CONF"
-
-    msg_info "Создание WARP startup script..."
-
-    cat > "$WARP_START" <<'EOF'
-#!/bin/bash
-
-set -e
-
-wg-quick down wgcf1 2>/dev/null || true
-wg-quick down wgcf2 2>/dev/null || true
-
-wg-quick up wgcf1
-wg-quick up wgcf2
-EOF
+    {
+        echo "#!/bin/bash"
+        echo ""
+        echo "set -e"
+        echo ""
+        for ((i = 1; i <= WARP_COUNT; i++)); do
+            echo "wg-quick down wgcf${i} 2>/dev/null || true"
+        done
+        echo ""
+        for ((i = 1; i <= WARP_COUNT; i++)); do
+            echo "wg-quick up wgcf${i}"
+        done
+    } > "$WARP_START"
 
     chmod +x "$WARP_START"
 
@@ -1257,29 +1152,29 @@ EOF
         echo "Проверка интерфейсов:"
         echo
 
-        wg show wgcf1 || true
+        local all_up="yes"
 
-        echo
+        for ((i = 1; i <= WARP_COUNT; i++)); do
+            wg show "wgcf${i}" || true
+            echo
+            ip addr show "wgcf${i}" || true
+            echo
 
-        wg show wgcf2 || true
+            if ! ip link show "wgcf${i}" >/dev/null 2>&1; then
+                all_up="no"
+            fi
+        done
 
-        echo
-        ip addr show wgcf1 || true
-
-        echo
-        ip addr show wgcf2 || true
-
-        if ip link show wgcf1 >/dev/null 2>&1 &&
-           ip link show wgcf2 >/dev/null 2>&1; then
+        if [[ "$all_up" == "yes" ]]; then
 
             echo
-            msg_ok "Оба WARP интерфейса успешно запущены."
+            msg_ok "Все WARP интерфейсы (${WARP_COUNT} шт.) успешно запущены."
             STATUS[6]="OK"
 
         else
 
             echo
-            msg_error "Один или оба WARP интерфейса не запустились."
+            msg_error "Один или несколько WARP интерфейсов не запустились."
             STATUS[6]="FAILED"
 
         fi
@@ -1696,28 +1591,6 @@ install_selfsteal() {
 }
 
 # ============================================================
-# Report 1-8
-# ============================================================
-
-show_report_1_to_8() {
-
-    msg_title "Отчёт по пунктам 1-8"
-
-    print_table_header
-
-    print_table_row "1" "Отключить fwupd" "${STATUS[1]}"
-    print_table_row "2" "apt update + доступные обновления" "${STATUS[2]}"
-    print_table_row "3" "Отключить IPv6" "${STATUS[3]}"
-    print_table_row "4" "BBR / Network sysctl" "${STATUS[4]}"
-    print_table_row "5" "Zapret.dat" "${STATUS[5]}"
-    print_table_row "6" "2 WARP профиля" "${STATUS[6]}"
-    print_table_row "7" "UFW" "${STATUS[7]}"
-    print_table_row "8" "Fail2ban" "${STATUS[8]}"
-
-    echo
-}
-
-# ============================================================
 # Final report
 # ============================================================
 
@@ -1732,12 +1605,11 @@ show_final_report() {
     print_table_row "3" "Отключить IPv6" "${STATUS[3]}"
     print_table_row "4" "BBR / Network sysctl" "${STATUS[4]}"
     print_table_row "5" "Zapret.dat" "${STATUS[5]}"
-    print_table_row "6" "2 WARP профиля" "${STATUS[6]}"
+    print_table_row "6" "WARP профили (${WARP_COUNT} шт.)" "${STATUS[6]}"
     print_table_row "7" "UFW" "${STATUS[7]}"
     print_table_row "8" "Fail2ban" "${STATUS[8]}"
     print_table_row "9" "RemnaNode" "${STATUS[9]}"
     print_table_row "10" "Selfsteal" "${STATUS[10]}"
-    print_table_row "11" "Установка 1-9" "${STATUS[11]}"
 
     echo
     echo "Лог:"
@@ -1746,188 +1618,139 @@ show_final_report() {
 }
 
 # ============================================================
-# 11. Install 1-9
+# Auto-install wizard
 # ============================================================
 
-install_1_to_9() {
+run_auto_install() {
 
-    msg_title "11. Установка 1-9"
+    msg_title "Мастер автоматической установки"
 
-    STATUS[11]="RUNNING"
+    msg_info "Ответьте на вопросы, чтобы выбрать, какие компоненты установить автоматически."
+    echo
 
-    # ========================================================
-    # Ask before Zapret
-    # ========================================================
-
+    local run_fwupd="no"
+    local run_apt="no"
+    local run_ipv6="no"
+    local run_bbr="no"
     local run_zapret="no"
-
-    if ask_yes_no "Установить Zapret.dat?"; then
-        run_zapret="yes"
-    fi
-
-    echo
-
-    # ========================================================
-    # Ask before WARP
-    # ========================================================
-
     local run_warp="no"
-
-    if ask_yes_no "Установить и настроить 2 WARP профиля?"; then
-        run_warp="yes"
-    fi
-
-    echo
-
-    # ========================================================
-    # Ask before UFW
-    # ========================================================
-
     local run_ufw="no"
+    local run_fail2ban="no"
+    local run_remnanode="no"
+    local run_selfsteal="no"
 
-    if ask_yes_no "Настроить UFW?"; then
-        run_ufw="yes"
+    if ask_yes_no "1. Отключить fwupd?" "y"; then run_fwupd="yes"; fi
+    if ask_yes_no "2. Выполнить apt update и показать обновления?" "y"; then run_apt="yes"; fi
+    if ask_yes_no "3. Отключить IPv6?" "y"; then run_ipv6="yes"; fi
+    if ask_yes_no "4. Настроить BBR / Network sysctl?" "y"; then run_bbr="yes"; fi
+    if ask_yes_no "5. Установить Zapret.dat?" "y"; then run_zapret="yes"; fi
+    if ask_yes_no "6. Установить и настроить WARP профили?" "y"; then
+        run_warp="yes"
+        ask_warp_count
     fi
+    if ask_yes_no "7. Настроить UFW?" "y"; then run_ufw="yes"; fi
+    if ask_yes_no "8. Установить и настроить Fail2ban?" "y"; then run_fail2ban="yes"; fi
+    if ask_yes_no "9. Установить RemnaNode?" "y"; then run_remnanode="yes"; fi
+    if ask_yes_no "10. Установить Selfsteal?" "n"; then run_selfsteal="yes"; fi
 
     echo
+    msg_step "Запуск автоматической установки выбранных компонентов"
 
-    # ========================================================
     # 1
-    # ========================================================
+    if [[ "$run_fwupd" == "yes" ]]; then
+        disable_fwupd
+    else
+        STATUS[1]="SKIPPED"
+        msg_warn "Пункт 1 (fwupd) пропущен."
+    fi
 
-    disable_fwupd
-
-    msg_step "Переход к пункту 2"
-
-    # ========================================================
     # 2
-    # ========================================================
+    if [[ "$run_apt" == "yes" ]]; then
+        apt_update_show_upgrades
+    else
+        STATUS[2]="SKIPPED"
+        msg_warn "Пункт 2 (apt update) пропущен."
+    fi
 
-    apt_update_show_upgrades
-
-    msg_step "Переход к пункту 3"
-
-    # ========================================================
     # 3
-    # ========================================================
+    if [[ "$run_ipv6" == "yes" ]]; then
+        disable_ipv6
+    else
+        STATUS[3]="SKIPPED"
+        msg_warn "Пункт 3 (IPv6) пропущен."
+    fi
 
-    disable_ipv6
-
-    msg_step "Переход к пункту 4"
-
-    # ========================================================
     # 4
-    # ========================================================
+    if [[ "$run_bbr" == "yes" ]]; then
+        configure_bbr
+    else
+        STATUS[4]="SKIPPED"
+        msg_warn "Пункт 4 (BBR) пропущен."
+    fi
 
-    configure_bbr
-
-    msg_step "Переход к пункту 5"
-
-    # ========================================================
     # 5
-    # ========================================================
-
     if [[ "$run_zapret" == "yes" ]]; then
-
         install_zapret
-
     else
-
-        msg_warn "Zapret.dat пропущен."
         STATUS[5]="SKIPPED"
-
+        msg_warn "Пункт 5 (Zapret) пропущен."
     fi
 
-    msg_step "Переход к пункту 6"
-
-    # ========================================================
     # 6
-    # ========================================================
-
     if [[ "$run_warp" == "yes" ]]; then
-
-        install_warp yes
-
+        install_warp "$WARP_COUNT"
     else
-
-        msg_warn "WARP пропущен."
         STATUS[6]="SKIPPED"
-
+        msg_warn "Пункт 6 (WARP) пропущен."
     fi
 
-    msg_step "Переход к пункту 7"
-
-    # ========================================================
     # 7
-    # ========================================================
-
     if [[ "$run_ufw" == "yes" ]]; then
-
         configure_ufw
-
     else
-
-        msg_warn "UFW пропущен."
         STATUS[7]="SKIPPED"
-
+        msg_warn "Пункт 7 (UFW) пропущен."
     fi
 
-    msg_step "Переход к пункту 8"
-
-    # ========================================================
     # 8
-    # ========================================================
-
-    install_fail2ban
-
-    # ========================================================
-    # Report 1-8
-    # ========================================================
-
-    show_report_1_to_8
-
-    echo
-    msg_info "Переход к установке RemnaNode..."
-    echo
-
-    # ========================================================
-    # 9
-    # ========================================================
-
-    install_remnanode yes
-
-    # ========================================================
-    # После установки RemnaNode — добавляем volume zapret.dat
-    # в compose, если ранее была подтверждена установка Zapret.
-    # К этому моменту Docker уже установлен (установщиком RemnaNode),
-    # поэтому volume будет добавлен и контейнеры перезапущены.
-    # ========================================================
-
-    if [[ "$run_zapret" == "yes" ]] && [[ "${STATUS[9]}" == "OK" ]]; then
-
-        msg_step "Добавление volume zapret.dat в compose..."
-
-        if ensure_zapret_volume; then
-            msg_ok "Volume zapret.dat добавлен в RemnaNode compose."
-        else
-            msg_error "Не удалось добавить volume zapret.dat."
-        fi
-
+    if [[ "$run_fail2ban" == "yes" ]]; then
+        install_fail2ban
+    else
+        STATUS[8]="SKIPPED"
+        msg_warn "Пункт 8 (Fail2ban) пропущен."
     fi
 
-    STATUS[11]="OK"
+    # 9
+    if [[ "$run_remnanode" == "yes" ]]; then
+        install_remnanode yes
 
-    # ========================================================
-    # Final report
-    # ========================================================
+        if [[ "$run_zapret" == "yes" ]] && [[ "${STATUS[9]}" == "OK" ]]; then
+            msg_step "Добавление volume zapret.dat в compose..."
+            if ensure_zapret_volume; then
+                msg_ok "Volume zapret.dat добавлен в RemnaNode compose."
+            else
+                msg_error "Не удалось добавить volume zapret.dat."
+            fi
+        fi
+    else
+        STATUS[9]="SKIPPED"
+        msg_warn "Пункт 9 (RemnaNode) пропущен."
+    fi
+
+    # 10
+    if [[ "$run_selfsteal" == "yes" ]]; then
+        install_selfsteal
+    else
+        STATUS[10]="SKIPPED"
+        msg_warn "Пункт 10 (Selfsteal) пропущен."
+    fi
 
     show_final_report
 
     echo
-    msg_ok "Установка 1-9 завершена."
+    msg_ok "Автоматическая установка завершена."
     echo
-
-    exit 0
+    pause_menu
 }
 
 # ============================================================
@@ -1948,13 +1771,13 @@ while true; do
     echo -e "${CYAN}3.${RESET}  Отключить IPv6"
     echo -e "${CYAN}4.${RESET}  Настроить BBR / Network sysctl"
     echo -e "${CYAN}5.${RESET}  Установить Zapret.dat"
-    echo -e "${CYAN}6.${RESET}  Установить и настроить 2 WARP профиля"
+    echo -e "${CYAN}6.${RESET}  Установить и настроить WARP профили"
     echo -e "${CYAN}7.${RESET}  Настроить UFW"
     echo -e "${CYAN}8.${RESET}  Установить и настроить Fail2ban"
     echo -e "${CYAN}9.${RESET}  Установить RemnaNode"
     echo -e "${CYAN}10.${RESET} Установить Selfsteal"
     echo
-    echo -e "${YELLOW}11.${RESET} Установить 1-9"
+    echo -e "${YELLOW}11.${RESET} Автоматическая установка (мастер)"
     echo
     echo -e "${GRAY}0.${RESET}  Выход"
     echo
@@ -1992,7 +1815,7 @@ while true; do
             ;;
 
         6)
-            install_warp no
+            install_warp
             pause_menu
             ;;
 
@@ -2017,7 +1840,7 @@ while true; do
             ;;
 
         11)
-            install_1_to_9
+            run_auto_install
             ;;
 
         0)
