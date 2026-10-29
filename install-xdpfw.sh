@@ -6,17 +6,21 @@
 #   * всё входящее закрыто (TCP/UDP), кроме ответов на исходящие соединения сервера
 #   * SSH 22: только список IP (или всем — выбирается при установке и в меню)
 #   * TCP 1433 (порт ноды Remnawave): только один IP (меняется в меню)
-#   * Произвольные открытые порты (TCP / UDP / TCP+UDP): открываются и закрываются в xdpfw-menu (пункт 18)
 #   * TCP 443: открыт для всех, а дальше три независимых защиты:
 #       1) антифлуд обычных IP: лимиты пакетов/соединений на IP -> блокировка на 443
-#          (по умолчанию режим «Высокий»: 800 пакетов, 25 SYN в секунду)
-#       2) лимит одновременно допущенных IP вне whitelist (по умолчанию 50 на каждый
-#          IP-адрес интерфейса, например ens3; время освобождения слота — 1 с)
+#       2) лимит одновременно допущенных IP вне whitelist (по умолчанию 50)
 #       3) отдельный антифлуд для whitelist (свои лимиты, своё время блокировки, вкл/выкл)
 #   * Whitelist (24 ч) = IP, которых Xray реально авторизовал (stats API, без логов):
 #     опрос каждые 2 с, запись в whitelist обновляется раз в час
-#   * UDP для whitelist (по умолчанию порт 443): когда ВЫКЛ — входящий UDP закрыт для всех;
-#     когда ВКЛ — открыт только для IP из whitelist (порт и адрес VPS меняются в меню).
+#   * UDP для whitelist (по умолчанию порт 443): только для whitelist; опция, выбирается при установке и в меню.
+#     Порт можно изменить, а порт можно открыть только на одном конкретном адресе этого VPS (udp_port, udp_ip).
+#     Если UDP для whitelist ВЫКЛЮЧЕН — входящий UDP закрыт для всех (и 443, и порт udp_port). Исключения: DHCP и
+#     ответы на исходящие запросы самого сервера (эфемерные порты: DNS, NTP, UDP клиентов через Xray) — они
+#     отключаются отдельным переключателем udp_replies (меню, пункт 11 -> 4), тогда UDP закрыт полностью.
+#   * Лимит IP на 443: по умолчанию ОТДЕЛЬНЫЙ пул (50 IP вне whitelist) для КАЖДОГО IP-адреса на интерфейсе;
+#     переключатель ip_limit_per_addr (меню, пункт 17): выкл — один общий пул на весь интерфейс.
+#   * Главный выключатель enabled (меню, пункт 18): ВЫКЛ — XDP и tc сняты, все порты открыты, скорость не
+#     ограничивается, блокировки/лимиты/штрафы сброшены (whitelist сохраняется).
 #   * Ограничение скорости в ОБЕ стороны (настоящий shaping: пакеты ставятся в очередь, а не отбрасываются):
 #     исходящий трафик (VPS -> IP) — tc egress + fq; входящий (IP -> VPS) — tc ingress + IFB + fq.
 #     Направления считаются раздельно и не суммируются. По умолчанию ограничение скорости ВЫКЛЮЧЕНО
@@ -67,7 +71,7 @@ command -v docker >/dev/null 2>&1 || echo "    ВНИМАНИЕ: docker не н�
 echo "[2/8] Сетевой интерфейс и ваш SSH-IP"
 IFACE="${IFACE:-$(ip -o route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')}"
 if [[ -z "$IFACE" ]]; then
-  echo "Не удалось определить интерфейс. Запустите так: sudo IFACE=ens3 bash $0"
+  echo "Не удалось определить интерфейс. Запустите так: sudo IFACE=eth0 bash $0"
   exit 1
 fi
 echo "    интерфейс: $IFACE"
@@ -98,25 +102,18 @@ if [[ -f "$CONF" ]]; then
     -e 's/^poll_interval=5$/poll_interval=2/' \
     -e 's/^xray_container=auto$/xray_container=remnanode/' \
     -e 's|^xray_bin=auto$|xray_bin=/usr/local/bin/xray|' \
-    -e 's/^flood_packets=300$/flood_packets=800/' \
-    -e 's/^flood_syn=10$/flood_syn=25/' \
-    -e 's/^ip_limit_idle=30$/ip_limit_idle=1/' \
     -e '/^flood_skip_whitelisted=/d' \
     "$CONF"
   add_default() { grep -q "^$1=" "$CONF" || echo "$1=$2" >> "$CONF"; }
   add_default whitelist_refresh_minutes 60
-  add_default flood_window 1
-  add_default flood_packets 800
-  add_default flood_syn 25
   add_default wl_flood no
   add_default wl_flood_window 1
   add_default wl_flood_packets 150000
   add_default wl_flood_syn 300
   add_default wl_ban_minutes 10
   add_default ip_limit yes
-  add_default ip_limit_per_dst yes
   add_default ip_limit_max 50
-  add_default ip_limit_idle 1
+  add_default ip_limit_idle 30
   add_default bridge_port 18085
   add_default poll_interval 2
   add_default shape_auto no
@@ -132,6 +129,12 @@ if [[ -f "$CONF" ]]; then
   add_default udp_ip any
   add_default shape_max_delay_ms 2000
   add_default shape_check_sec 10
+  add_default ip_limit_per_addr yes
+  add_default udp_replies yes
+  add_default enabled yes
+  if grep -qi '^enabled=\(no\|false\|0\|off\)$' "$CONF"; then
+    echo "    ВНИМАНИЕ: в конфиге весь функционал ВЫКЛЮЧЕН (enabled=no) — файрвол не будет загружен; включить: xdpfw-menu, пункт 18"
+  fi
 else
   # UDP для whitelist по умолчанию ВЫКЛЮЧЕН (включается в xdpfw-menu, пункт 11, или переменными UDP443=yes UDP_PORT= UDP_IP=)
   UDP443="${UDP443:-no}"
@@ -171,6 +174,10 @@ else
     echo "# ===== xdpfw: конфигурация (удобнее менять через xdpfw-menu) ====="
     echo "iface=$IFACE"
     echo
+    echo "# ГЛАВНЫЙ ВЫКЛЮЧАТЕЛЬ всего функционала: yes / no."
+    echo "# no — XDP и tc сняты, все порты открыты, скорость не ограничивается, блокировки/лимиты/штрафы сброшены."
+    echo "enabled=yes"
+    echo
     echo "# SSH 22: list = только allow_ssh, all = всем"
     echo "ssh_mode=$SSH_MODE"
     for ip in "${SSH_DEFAULT_IPS[@]}"; do echo "allow_ssh=$ip"; done
@@ -179,14 +186,15 @@ else
     echo "# TCP 1433 (порт ноды Remnawave) — только с этого IP"
     echo "allow_1433=$MSSQL_DEFAULT_IP"
     echo
-    echo "# Дополнительные открытые порты: open_port=ПОРТ,tcp|udp|both (управление в xdpfw-menu, пункт 18)"
-    echo
-    echo "# UDP для IP из whitelist: yes = открыт только для whitelist, no = входящий UDP закрыт для всех"
+    echo "# UDP для IP из whitelist: yes / no"
     echo "udp443_whitelist=$UDP443"
     echo "# порт UDP (по умолчанию 443; не из диапазона эфемерных портов)"
     echo "udp_port=$UDP_PORT"
     echo "# адрес этого VPS, на котором открыт UDP-порт: IP или any (любой адрес сервера)"
     echo "udp_ip=$UDP_IP"
+    echo "# Ответы на исходящие UDP-запросы самого сервера (эфемерные порты: DNS, NTP, UDP клиентов через Xray): yes / no."
+    echo "# no — UDP закрыт полностью (кроме DHCP), но перестанут работать DNS/NTP сервера и UDP через Xray."
+    echo "udp_replies=yes"
     echo
     echo "# Whitelist: на сколько часов добавляется IP и как часто (минуты) продлевается запись у тех, кто уже онлайн"
     echo "whitelist_hours=24"
@@ -195,10 +203,9 @@ else
     echo "# --- Антифлуд обычных IP (вне whitelist) на TCP 443, лимиты для каждого IP отдельно ---"
     echo "#   flood_packets — макс. пакетов за окно (0 = защита выключена),"
     echo "#   flood_syn — макс. новых соединений за окно, flood_window — длина окна, секунды"
-    echo "#   По умолчанию режим «Высокий»: 800 пакетов, 25 SYN за 1 с"
     echo "flood_window=1"
-    echo "flood_packets=800"
-    echo "flood_syn=25"
+    echo "flood_packets=300"
+    echo "flood_syn=10"
     echo "# На сколько минут блокируется IP на 443 при флуде"
     echo "ban_minutes=60"
     echo
@@ -212,13 +219,12 @@ else
     echo
     echo "# --- Лимит IP на TCP 443: пакеты пропускаются не более чем от ip_limit_max разных IP ---"
     echo "# IP из whitelist не считаются и всегда в приоритете, остальные сверх лимита дропаются."
-    echo "# ip_limit_per_dst=yes — лимит ip_limit_max считается отдельно для каждого IP-адреса в $IFACE."
-    echo "# ip_limit_per_dst=no  — общий лимит ip_limit_max на весь интерфейс $IFACE."
-    echo "# Слот IP освобождается, если от него нет пакетов ip_limit_idle секунд (по умолчанию 1 с)."
+    echo "# Слот IP освобождается, если от него нет пакетов ip_limit_idle секунд."
     echo "ip_limit=yes"
-    echo "ip_limit_per_dst=yes"
     echo "ip_limit_max=50"
-    echo "ip_limit_idle=1"
+    echo "ip_limit_idle=30"
+    echo "# yes — у каждого IP-адреса на интерфейсе СВОЙ пул из ip_limit_max IP; no — один общий пул на весь интерфейс"
+    echo "ip_limit_per_addr=yes"
     echo
     echo "# --- Ограничение скорости в обе стороны (traffic shaping: очередь fq, а не drop) ---"
     echo "# Исходящий трафик: байты, которые VPS отправил этому IP с порта shape_port (download клиента)."
@@ -267,11 +273,10 @@ cat > "$SRC/xdpfw.bpf.c" <<'BPF_EOF'
 
 /* IPv4 хранится как IPv4-mapped IPv6 (::ffff:a.b.c.d) */
 struct addr_key { __u8 a[16]; };
-struct slot_key {
-    struct addr_key src;
-    struct addr_key dst; /* при ip_limit_per_dst=1 — локальный IP VPS, иначе нули */
-};
 struct acl_key  { struct addr_key ip; __u16 port; __u16 pad; };
+/* слот лимита IP: кто (src) и в чьём пуле (pool). pool = адрес VPS на интерфейсе, если лимит ведётся
+ * отдельно для каждого адреса, и нули, если один общий пул на весь интерфейс */
+struct slot_key { struct addr_key src; struct addr_key pool; };
 struct fl       { __u64 start_ns; __u32 pkts; __u32 syns; };
 struct fwcfg {
     __u32 eph_lo, eph_hi;
@@ -280,7 +285,10 @@ struct fwcfg {
     __u32 wl_flood, wl_flood_pkts;
     __u32 wl_flood_syn, ip_limit;
     __u32 ip_limit_max, udp_port;      /* udp_port: порт UDP для whitelist (по умолчанию 443) */
-    __u32 udp_ip_set, ip_limit_per_dst;/* udp_ip_set=1: только на udp_ip; ip_limit_per_dst=1: лимит IP на каждый адрес интерфейса */
+    __u32 udp_ip_set;                  /* udp_ip_set=1: открыто только на адресе udp_ip этого VPS */
+    __u32 ip_per_dst;                  /* 1 — свой лимит IP на каждый адрес VPS, 0 — один общий на интерфейс */
+    __u32 udp_replies;                 /* 1 — пропускать UDP-ответы на исходящие запросы сервера (эфемерные порты) */
+    __u32 fw_on;                       /* 0 — главный выключатель: пропускать всё */
     __u8  udp_ip[16];                  /* IPv4 как ::ffff:a.b.c.d */
     __u64 flood_window_ns, ban_ns;
     __u64 wl_flood_window_ns, wl_ban_ns;
@@ -320,9 +328,9 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);
-    __type(key, struct addr_key);
-    __type(value, __u32);              /* сколько слотов занято на каждом IP интерфейса (пересчитывает демон) */
+    __uint(max_entries, 1024);
+    __type(key, struct addr_key);      /* пул (адрес VPS или нули) */
+    __type(value, __u32);              /* сколько слотов в пуле занято (пересчитывает демон) */
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ip_cnt SEC(".maps");
 
@@ -333,15 +341,6 @@ struct {
     __type(value, __u8);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } acl_tcp SEC(".maps");
-
-/* Открытые пользователем порты: ключ — порт, значение — битовая маска (1 = TCP, 2 = UDP, 3 = TCP+UDP) */
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, __u16);
-    __type(value, __u8);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} open_ports SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -432,6 +431,9 @@ int xdp_fw(struct xdp_md *ctx)
     __u64 now = bpf_ktime_get_ns();
     struct fwcfg *cfg = bpf_map_lookup_elem(&fw_cfg, &zero);
 
+    if (cfg && !cfg->fw_on)
+        return XDP_PASS;                /* главный выключатель: файрвол выключен, пропускаем всё */
+
     /* эфемерные порты = ответы на исходящие соединения сервера */
     __u32 lo = cfg ? cfg->eph_lo : 32768;
     __u32 hi = cfg ? cfg->eph_hi : 60999;
@@ -464,27 +466,27 @@ int xdp_fw(struct xdp_md *ctx)
                     ban_ns = cfg->wl_ban_ns;
                 }
             } else {
-                /* лимит числа допущенных IP вне whitelist (для каждого IP интерфейса или общий) */
+                /* лимит числа допущенных IP вне whitelist */
                 if (cfg->ip_limit && cfg->ip_limit_max) {
-                    struct slot_key sk = { .src = src };
-                    struct addr_key ck = {};
-                    if (cfg->ip_limit_per_dst) {
-                        sk.dst = dst;
-                        ck = dst;
-                    }
+                    struct slot_key sk = {};
+                    __builtin_memcpy(&sk.src, &src, sizeof(src));
+                    if (cfg->ip_per_dst)
+                        __builtin_memcpy(&sk.pool, &dst, sizeof(dst));
                     __u64 *seen = bpf_map_lookup_elem(&slots, &sk);
                     if (seen) {
-                        /* обновляем метку не чаще 10 раз в секунду (шаг 100 мс для точного idle=1 с) */
-                        if (now - *seen > 100000000ULL)
+                        /* метку времени пишем не чаще раза в секунду: простой считается десятками секунд,
+                         * а запись в общую память на каждый пакет — лишняя нагрузка на кэш процессора */
+                        if (now - *seen > 1000000000ULL)
                             *seen = now;
                     } else {
-                        __u32 *cnt = bpf_map_lookup_elem(&ip_cnt, &ck);
+                        __u32 *cnt = bpf_map_lookup_elem(&ip_cnt, &sk.pool);
                         if (!cnt) {
-                            __u32 init_cnt = 0;
-                            bpf_map_update_elem(&ip_cnt, &ck, &init_cnt, BPF_NOEXIST);
-                            cnt = bpf_map_lookup_elem(&ip_cnt, &ck);
+                            bpf_map_update_elem(&ip_cnt, &sk.pool, &zero, BPF_NOEXIST);
+                            cnt = bpf_map_lookup_elem(&ip_cnt, &sk.pool);
+                            if (!cnt)
+                                return do_drop();
                         }
-                        if (!cnt || *cnt >= cfg->ip_limit_max)
+                        if (*cnt >= cfg->ip_limit_max)
                             return do_drop();
                         if (bpf_map_update_elem(&slots, &sk, &now, BPF_NOEXIST) == 0)
                             __sync_fetch_and_add(cnt, 1);
@@ -527,11 +529,6 @@ int xdp_fw(struct xdp_md *ctx)
         if (dport == 22 && cfg && cfg->ssh_open)
             return XDP_PASS;
 
-        __u16 dp16 = (__u16)dport;
-        __u8 *pm = bpf_map_lookup_elem(&open_ports, &dp16);
-        if (pm && (*pm & 1))
-            return XDP_PASS;
-
         struct acl_key k = {};
         k.ip = src;
         k.port = dport;
@@ -545,18 +542,15 @@ int xdp_fw(struct xdp_md *ctx)
         return XDP_PASS;                /* ответ на исходящее соединение */
     }
 
-    /* UDP: когда udp443_wl выключен — входящий UDP закрыт для всех (кроме открытых через меню портов, DNS/NTP и DHCP) */
+    /* UDP */
     struct udphdr *udp = l4;
     if ((void *)(udp + 1) > data_end)
         return do_drop();
     __u32 dport = bpf_ntohs(udp->dest);
     __u32 sport = bpf_ntohs(udp->source);
 
-    __u16 dp16 = (__u16)dport;
-    __u8 *pm = bpf_map_lookup_elem(&open_ports, &dp16);
-    if (pm && (*pm & 2))
-        return XDP_PASS;
-
+    /* UDP для whitelist: порт udp_port, при udp_ip_set — только на адресе udp_ip этого VPS.
+     * Если UDP для whitelist выключен, порт udp_port и 443 закрыты для всех (ниже). */
     if (cfg && cfg->udp443_wl && dport == cfg->udp_port &&
         (!cfg->udp_ip_set || addr_eq(dst.a, cfg->udp_ip))) {
         __u64 *ban = bpf_map_lookup_elem(&banlist, &src);
@@ -568,11 +562,13 @@ int xdp_fw(struct xdp_md *ctx)
         return do_drop();
     }
     if (dport == 443 || (cfg && dport == cfg->udp_port))
-        return do_drop();               /* UDP-порт закрыт для всех, если правило выше не сработало */
+        return do_drop();               /* UDP 443 и порт UDP-whitelist — никому, кроме правила выше */
     if ((sport == 67 && dport == 68) || (sport == 547 && dport == 546))
         return XDP_PASS;                /* DHCPv4 / DHCPv6 */
-    if ((sport == 53 || sport == 123) && dport >= lo && dport <= hi)
-        return XDP_PASS;                /* ответы DNS (53) и NTP (123) на исходящие запросы сервера */
+    if (cfg && !cfg->udp_replies)
+        return do_drop();               /* ответы на исходящий UDP отключены: UDP закрыт полностью */
+    if (dport >= lo && dport <= hi)
+        return XDP_PASS;                /* ответы DNS/NTP/и т.д. */
     return do_drop();
 }
 
@@ -908,17 +904,13 @@ cat > "$SRC/xdpfw.c" <<'C_EOF'
 #define STATE_DIR     "/var/lib/xdpfw"
 #define STATE_FILE    "/var/lib/xdpfw/shape-state"
 #define MAX_ALLOW     512
-#define MAX_PORTS     512
 #define MAX_KNOWN     4096
 #define NB            60                 /* число корзин скользящего окна */
 #define SEC_NS        1000000000ULL
 
 struct addr_key { uint8_t a[16]; };
-struct slot_key {
-    struct addr_key src;
-    struct addr_key dst;
-};
 struct acl_key  { struct addr_key ip; uint16_t port; uint16_t pad; };
+struct slot_key { struct addr_key src; struct addr_key pool; };
 struct fwcfg {
     uint32_t eph_lo, eph_hi;
     uint32_t ssh_open, udp443_wl;
@@ -926,7 +918,8 @@ struct fwcfg {
     uint32_t wl_flood, wl_flood_pkts;
     uint32_t wl_flood_syn, ip_limit;
     uint32_t ip_limit_max, udp_port;
-    uint32_t udp_ip_set, ip_limit_per_dst;
+    uint32_t udp_ip_set, ip_per_dst;
+    uint32_t udp_replies, fw_on;
     uint8_t  udp_ip[16];
     uint64_t flood_window_ns, ban_ns;
     uint64_t wl_flood_window_ns, wl_ban_ns;
@@ -941,10 +934,12 @@ struct bwip  { uint32_t lock, pad; uint64_t next_tx_ns, total; };
 struct hist  { uint64_t last_total, head, b[NB]; };
 
 struct allow { struct addr_key ip; uint16_t port; };
-struct port_rule { uint16_t port; uint8_t proto; }; /* proto: 1=TCP, 2=UDP, 3=TCP+UDP */
 struct config {
     char iface[IFNAMSIZ];
-    int ssh_open, udp443_wl, wl_flood, ip_limit, ip_limit_per_dst;
+    int enabled;                        /* главный выключатель всего функционала */
+    int ssh_open, udp443_wl, wl_flood, ip_limit;
+    int ip_per_addr;                    /* лимит IP: отдельный пул на каждый адрес VPS на интерфейсе */
+    int udp_replies;                    /* пропускать UDP-ответы на исходящие запросы сервера */
     uint64_t udp_port;                  /* порт UDP для whitelist */
     int udp_ip_set;                     /* 1 — только на адресе udp_ip этого VPS */
     struct addr_key udp_ip;
@@ -959,8 +954,6 @@ struct config {
     uint64_t sh_cap_mbps, sh_port, sh_delay_ms, sh_check;
     int n_allow;
     struct allow allow[MAX_ALLOW];
-    int n_ports;
-    struct port_rule ports[MAX_PORTS];
 };
 
 static volatile sig_atomic_t g_stop, g_reload;
@@ -1043,41 +1036,6 @@ static void add_allow(struct config *c, const char *ip, uint16_t port)
     else fprintf(stderr, "config: bad ip '%s'\n", ip);
 }
 
-/* Разбор open_port=ПОРТ,tcp|udp|both */
-static void add_open_port(struct config *c, char *val)
-{
-    char *comma = strchr(val, ',');
-    uint8_t mask = 3; /* по умолчанию оба, если не указано */
-    if (comma) {
-        *comma = 0;
-        char *pr = trim(comma + 1);
-        if (!strcasecmp(pr, "tcp")) mask = 1;
-        else if (!strcasecmp(pr, "udp")) mask = 2;
-        else if (!strcasecmp(pr, "both") || !strcasecmp(pr, "tcp+udp") || !strcasecmp(pr, "all")) mask = 3;
-        else {
-            fprintf(stderr, "config: open_port: unknown protocol '%s'\n", pr);
-            return;
-        }
-    }
-    unsigned long long p = strtoull(trim(val), NULL, 10);
-    if (p < 1 || p > 65535) {
-        fprintf(stderr, "config: open_port: bad port '%s'\n", val);
-        return;
-    }
-    uint16_t port = (uint16_t)p;
-    for (int i = 0; i < c->n_ports; i++) {
-        if (c->ports[i].port == port) {
-            c->ports[i].proto = mask;
-            return;
-        }
-    }
-    if (c->n_ports >= MAX_PORTS)
-        return;
-    c->ports[c->n_ports].port = port;
-    c->ports[c->n_ports].proto = mask;
-    c->n_ports++;
-}
-
 static uint64_t clampu(uint64_t v, uint64_t lo, uint64_t hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -1090,14 +1048,15 @@ static int load_cfg(struct config *c)
 
     if (!f) { perror(CFG_PATH); return -1; }
     memset(c, 0, sizeof(*c));
-    snprintf(c->iface, sizeof(c->iface), "ens3");
+    snprintf(c->iface, sizeof(c->iface), "eth0");
+    c->enabled = 1; c->ip_per_addr = 1; c->udp_replies = 1;
     c->udp_port = 443;
     c->wl_ttl = 24 * 3600;
     c->wl_refresh = 3600;
-    c->flood_window = 1; c->flood_pkts = 800; c->flood_syn = 25; c->ban_sec = 3600;
+    c->flood_window = 1; c->flood_pkts = 300; c->flood_syn = 10; c->ban_sec = 3600;
     c->wl_flood = 0;
     c->wl_flood_window = 1; c->wl_flood_pkts = 150000; c->wl_flood_syn = 300; c->wl_ban_sec = 600;
-    c->ip_limit = 1; c->ip_limit_per_dst = 1; c->ip_limit_max = 50; c->ip_limit_idle = 1;
+    c->ip_limit = 1; c->ip_limit_max = 50; c->ip_limit_idle = 30;
     c->sh_auto = 0; c->sh_cap = 0; c->sh_up = 0;
     c->sh_window_min = 60; c->sh_avg_mbps = 50; c->sh_pen_mbps = 25; c->sh_pen_hours = 24;
     c->sh_cap_mbps = 250; c->sh_port = 443; c->sh_delay_ms = 2000; c->sh_check = 10;
@@ -1111,10 +1070,12 @@ static int load_cfg(struct config *c)
         char *key = trim(p), *val = trim(eq + 1);
 
         if (!strcmp(key, "iface"))                      snprintf(c->iface, sizeof(c->iface), "%s", val);
+        else if (!strcmp(key, "enabled"))               c->enabled = parse_bool(val);
+        else if (!strcmp(key, "ip_limit_per_addr"))     c->ip_per_addr = parse_bool(val);
+        else if (!strcmp(key, "udp_replies"))           c->udp_replies = parse_bool(val);
         else if (!strcmp(key, "ssh_mode"))              c->ssh_open = !strcasecmp(val, "all");
         else if (!strcmp(key, "allow_ssh"))             add_allow(c, val, 22);
         else if (!strcmp(key, "allow_1433"))            add_allow(c, val, 1433);
-        else if (!strcmp(key, "open_port"))             add_open_port(c, val);
         else if (!strcmp(key, "udp443_whitelist"))      c->udp443_wl = parse_bool(val);
         else if (!strcmp(key, "udp_port"))              c->udp_port = strtoull(val, NULL, 10);
         else if (!strcmp(key, "udp_ip"))                snprintf(c->udp_ip_txt, sizeof(c->udp_ip_txt), "%s", val);
@@ -1130,7 +1091,6 @@ static int load_cfg(struct config *c)
         else if (!strcmp(key, "wl_flood_syn"))          c->wl_flood_syn = strtoull(val, NULL, 10);
         else if (!strcmp(key, "wl_ban_minutes"))        c->wl_ban_sec = strtoull(val, NULL, 10) * 60;
         else if (!strcmp(key, "ip_limit"))              c->ip_limit = parse_bool(val);
-        else if (!strcmp(key, "ip_limit_per_dst"))      c->ip_limit_per_dst = parse_bool(val);
         else if (!strcmp(key, "ip_limit_max"))          c->ip_limit_max = strtoull(val, NULL, 10);
         else if (!strcmp(key, "ip_limit_idle"))         c->ip_limit_idle = strtoull(val, NULL, 10);
         else if (!strcmp(key, "shape_auto"))            c->sh_auto = parse_bool(val);
@@ -1166,7 +1126,7 @@ static int load_cfg(struct config *c)
     if (c->wl_ban_sec == 0) c->wl_ban_sec = 60;
     if (c->flood_window == 0) c->flood_window = 1;
     if (c->wl_flood_window == 0) c->wl_flood_window = 1;
-    if (c->ip_limit_idle == 0) c->ip_limit_idle = 1;
+    if (c->ip_limit_idle == 0) c->ip_limit_idle = 30;
     if (c->ip_limit_max > 60000) c->ip_limit_max = 60000;
     c->sh_window_min = clampu(c->sh_window_min, 10, 1440);
     c->sh_avg_mbps = clampu(c->sh_avg_mbps, 1, 100000);
@@ -1208,56 +1168,13 @@ static void sync_acl(int fd, const struct config *c)
     }
 }
 
-static int port_in_cfg(const struct config *c, uint16_t port)
-{
-    for (int i = 0; i < c->n_ports; i++)
-        if (c->ports[i].port == port)
-            return 1;
-    return 0;
-}
-
-static void sync_open_ports(int fd, const struct config *c)
-{
-    uint16_t cur, next;
-    if (fd < 0)
-        return;
-    for (int i = 0; i < c->n_ports; i++) {
-        uint16_t k = c->ports[i].port;
-        uint8_t v = c->ports[i].proto;
-        bpf_map_update_elem(fd, &k, &v, BPF_ANY);
-    }
-    int r = bpf_map_get_next_key(fd, NULL, &next);
-    while (r == 0) {
-        cur = next;
-        r = bpf_map_get_next_key(fd, &cur, &next);
-        if (!port_in_cfg(c, cur))
-            bpf_map_delete_elem(fd, &cur);
-    }
-}
-
-static void ports_desc(const struct config *c, char *buf, size_t n)
-{
-    if (c->n_ports == 0) {
-        snprintf(buf, n, "нет");
-        return;
-    }
-    size_t off = 0;
-    for (int i = 0; i < c->n_ports; i++) {
-        const char *pr = c->ports[i].proto == 1 ? "tcp" : (c->ports[i].proto == 2 ? "udp" : "tcp+udp");
-        int w = snprintf(buf + off, n - off, "%s%u/%s", i ? ", " : "", c->ports[i].port, pr);
-        if (w < 0 || (size_t)w >= n - off)
-            break;
-        off += (size_t)w;
-    }
-}
-
 /* адрес принадлежит этому серверу (есть на каком-либо интерфейсе)? */
 static int local_has_ip(const struct addr_key *k)
 {
     struct ifaddrs *ifa, *p;
     int found = 0;
     if (getifaddrs(&ifa))
-        return 1;                               /* проверить не смогли — не ругаемся */
+        return 1;                           /* проверить не смогли — не ругаемся */
     for (p = ifa; p && !found; p = p->ifa_next) {
         struct addr_key a;
         memset(&a, 0, sizeof(a));
@@ -1280,11 +1197,11 @@ static int local_has_ip(const struct addr_key *k)
 static void udp_desc(const struct config *c, char *buf, size_t n)
 {
     char ip[INET6_ADDRSTRLEN];
-    if (!c->udp443_wl) { snprintf(buf, n, "выкл (UDP закрыт для всех)"); return; }
+    if (!c->udp443_wl) { snprintf(buf, n, "off"); return; }
     if (c->udp_ip_set)
-        snprintf(buf, n, "вкл (только whitelist, UDP %llu на %s)", (unsigned long long)c->udp_port, ip_str(&c->udp_ip, ip, sizeof(ip)));
+        snprintf(buf, n, "UDP %llu на %s", (unsigned long long)c->udp_port, ip_str(&c->udp_ip, ip, sizeof(ip)));
     else
-        snprintf(buf, n, "вкл (только whitelist, UDP %llu на любом адресе)", (unsigned long long)c->udp_port);
+        snprintf(buf, n, "UDP %llu на любом адресе", (unsigned long long)c->udp_port);
 }
 
 static uint32_t clamp32(uint64_t v) { return v > 0xFFFFFFFFULL ? 0xFFFFFFFFU : (uint32_t)v; }
@@ -1307,7 +1224,6 @@ static void push_cfg_map(int fd, const struct config *c)
     m.udp443_wl = c->udp443_wl;
     m.udp_port = (uint32_t)c->udp_port;
     m.udp_ip_set = c->udp_ip_set;
-    m.ip_limit_per_dst = c->ip_limit_per_dst;
     memcpy(m.udp_ip, c->udp_ip.a, 16);
     m.flood_pkts = clamp32(c->flood_pkts);
     m.flood_syn = clamp32(c->flood_syn);
@@ -1320,6 +1236,9 @@ static void push_cfg_map(int fd, const struct config *c)
     m.wl_ban_ns = c->wl_ban_sec * SEC_NS;
     m.ip_limit = c->ip_limit;
     m.ip_limit_max = clamp32(c->ip_limit_max);
+    m.ip_per_dst = c->ip_per_addr;
+    m.udp_replies = c->udp_replies;
+    m.fw_on = c->enabled;
 
     uint32_t k = 0;
     bpf_map_update_elem(fd, &k, &m, BPF_ANY);
@@ -1358,50 +1277,15 @@ static int map_empty(int fd)
     return bpf_map_get_next_key(fd, NULL, &k) != 0;
 }
 
+/* очистить карту с любым ключом (до 64 байт) */
 static void map_clear(int fd)
 {
-    struct addr_key cur, next;
-    int r = bpf_map_get_next_key(fd, NULL, &next);
+    uint8_t cur[64], next[64];
+    int r = bpf_map_get_next_key(fd, NULL, next);
     while (r == 0) {
-        cur = next;
-        r = bpf_map_get_next_key(fd, &cur, &next);
-        bpf_map_delete_elem(fd, &cur);
-    }
-}
-
-static void slots_clear(int fd_slots, int fd_cnt)
-{
-    struct slot_key cur, next;
-    int r = bpf_map_get_next_key(fd_slots, NULL, &next);
-    while (r == 0) {
-        cur = next;
-        r = bpf_map_get_next_key(fd_slots, &cur, &next);
-        bpf_map_delete_elem(fd_slots, &cur);
-    }
-    map_clear(fd_cnt);
-}
-
-static void free_src_slots(int fd_slots, int fd_cnt, const struct addr_key *src)
-{
-    if (fd_slots < 0)
-        return;
-    struct slot_key cur, next;
-    int r = bpf_map_get_next_key(fd_slots, NULL, &next);
-    while (r == 0) {
-        cur = next;
-        r = bpf_map_get_next_key(fd_slots, &cur, &next);
-        if (!memcmp(&cur.src, src, sizeof(*src))) {
-            if (bpf_map_delete_elem(fd_slots, &cur) == 0 && fd_cnt >= 0) {
-                uint32_t cnt = 0;
-                if (bpf_map_lookup_elem(fd_cnt, &cur.dst, &cnt) == 0 && cnt > 0) {
-                    cnt--;
-                    if (cnt == 0)
-                        bpf_map_delete_elem(fd_cnt, &cur.dst);
-                    else
-                        bpf_map_update_elem(fd_cnt, &cur.dst, &cnt, BPF_ANY);
-                }
-            }
-        }
+        memcpy(cur, next, sizeof(cur));
+        r = bpf_map_get_next_key(fd, cur, next);
+        bpf_map_delete_elem(fd, cur);
     }
 }
 
@@ -1433,71 +1317,79 @@ static void cleanup_expired(int fd, uint64_t now)
     }
 }
 
-struct dst_cnt {
-    struct addr_key dst;
-    uint32_t cnt;
-};
+/* Пулы лимита IP: один общий (ключ из нулей) или по одному на каждый адрес VPS */
+#define MAX_POOLS 1024
+struct pool_cnt { struct addr_key k; uint32_t n; };
+static struct pool_cnt g_pools[MAX_POOLS];
 
-/* освобождаем слоты IP, от которых нет пакетов ip_limit_idle секунд (или попавших в whitelist),
- * и пересчитываем счётчик занятых слотов для каждого IP интерфейса (или общий) */
-static void prune_slots(int fd_slots, int fd_cnt, int fd_wl, const struct config *c, uint64_t now)
+static int pool_find(int np, const struct addr_key *k)
+{
+    for (int i = 0; i < np; i++)
+        if (!memcmp(&g_pools[i].k, k, sizeof(*k)))
+            return i;
+    return -1;
+}
+
+/* освобождаем слоты IP, от которых давно нет пакетов, и пересчитываем занятость каждого пула */
+static void prune_slots(int fd_slots, int fd_cnt, const struct config *c, uint64_t now)
 {
     struct slot_key cur, next;
-    struct addr_key ccur, cnext;
+    struct addr_key ck, nk;
     uint64_t v, idle = c->ip_limit_idle * SEC_NS;
-    struct dst_cnt dc[512];
-    int ndc = 0;
-
+    int np = 0;
     int r = bpf_map_get_next_key(fd_slots, NULL, &next);
     while (r == 0) {
         cur = next;
         r = bpf_map_get_next_key(fd_slots, &cur, &next);
         if (bpf_map_lookup_elem(fd_slots, &cur, &v))
             continue;
-        if ((now > v && now - v > idle) || (fd_wl >= 0 && map_active(fd_wl, &cur.src, now))) {
+        if (now > v && now - v > idle) {
             bpf_map_delete_elem(fd_slots, &cur);
-        } else {
-            struct addr_key ck = {};
-            if (c->ip_limit_per_dst)
-                ck = cur.dst;
-            int found = 0;
-            for (int i = 0; i < ndc; i++) {
-                if (!memcmp(&dc[i].dst, &ck, sizeof(ck))) {
-                    dc[i].cnt++;
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found && ndc < 512) {
-                dc[ndc].dst = ck;
-                dc[ndc].cnt = 1;
-                ndc++;
-            }
+            continue;
         }
+        int i = pool_find(np, &cur.pool);
+        if (i < 0 && np < MAX_POOLS) {
+            i = np++;
+            g_pools[i].k = cur.pool;
+            g_pools[i].n = 0;
+        }
+        if (i >= 0)
+            g_pools[i].n++;
     }
-
-    for (int i = 0; i < ndc; i++)
-        bpf_map_update_elem(fd_cnt, &dc[i].dst, &dc[i].cnt, BPF_ANY);
-
-    r = bpf_map_get_next_key(fd_cnt, NULL, &cnext);
+    for (int i = 0; i < np; i++)
+        bpf_map_update_elem(fd_cnt, &g_pools[i].k, &g_pools[i].n, BPF_ANY);
+    /* пулы без слотов (адрес убрали или режим лимита сменили) — записи счётчиков удаляем */
+    r = bpf_map_get_next_key(fd_cnt, NULL, &nk);
     while (r == 0) {
-        ccur = cnext;
-        r = bpf_map_get_next_key(fd_cnt, &ccur, &cnext);
-        int found = 0;
-        for (int i = 0; i < ndc; i++) {
-            if (!memcmp(&dc[i].dst, &ccur, sizeof(ccur))) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found)
-            bpf_map_delete_elem(fd_cnt, &ccur);
+        ck = nk;
+        r = bpf_map_get_next_key(fd_cnt, &ck, &nk);
+        if (pool_find(np, &ck) < 0)
+            bpf_map_delete_elem(fd_cnt, &ck);
+    }
+}
+
+/* IP попал в whitelist: освобождаем его слоты во всех пулах */
+static void drop_slots_for(int fd_slots, int fd_cnt, const struct addr_key *src)
+{
+    struct slot_key sk;
+    struct addr_key cur, next;
+    memset(&sk, 0, sizeof(sk));
+    sk.src = *src;
+    bpf_map_delete_elem(fd_slots, &sk);             /* общий пул */
+    if (fd_cnt < 0)
+        return;
+    int r = bpf_map_get_next_key(fd_cnt, NULL, &next);
+    while (r == 0) {
+        cur = next;
+        r = bpf_map_get_next_key(fd_cnt, &cur, &next);
+        sk.pool = cur;
+        bpf_map_delete_elem(fd_slots, &sk);
     }
 }
 
 /* Множество уже замеченных блокировок за флуд (хеш-таблица): при массовой атаке в banlist тысячи записей,
  * линейный поиск на каждую из них съедал бы заметную часть процессора. */
-#define KH 16384                             /* степень двойки, больше 2*MAX_KNOWN */
+#define KH 16384                              /* степень двойки, больше 2*MAX_KNOWN */
 struct kslot { struct addr_key k; uint8_t used; };
 static struct kslot g_kn[2][KH];
 static int g_kcur, g_kcnt[2];
@@ -1531,53 +1423,66 @@ static void kset_add(int t, const struct addr_key *k)
     g_kcnt[t]++;
 }
 
-/* Раз в секунду пересчитываем слоты лимита IP (чтобы ip_limit_idle=1 с отрабатывал точно),
- * раз в 2 секунды пишем в лог новые блокировки за флуд, раз в минуту чистим whitelist. */
+/* Раз в 2 секунды: пишем в лог новые блокировки за флуд и убираем истёкшие (сами блокировки выставляет
+ * XDP-программа в ядре). Тяжёлые обходы карт делаем реже: whitelist чистим раз в минуту (XDP и так
+ * игнорирует истёкшие записи), слоты лимита IP пересчитываем раз в 4 секунды. */
 static void scan(int fd_wl, int fd_ban, int fd_slots, int fd_cnt, const struct config *c)
 {
-    static uint64_t last_wl, last_slots, last_ban;
+    static uint64_t last_wl, last_slots;
     uint64_t now = mono_ns(), v;
     struct addr_key cur, next;
     char buf[INET6_ADDRSTRLEN];
+    int nt = 1 - g_kcur;
 
-    if (now - last_ban >= 2 * SEC_NS) {
-        last_ban = now;
-        int nt = 1 - g_kcur;
-        if (g_kcnt[nt]) {
-            memset(g_kn[nt], 0, sizeof(g_kn[nt]));
-            g_kcnt[nt] = 0;
-        }
-        int r = bpf_map_get_next_key(fd_ban, NULL, &next);
-        while (r == 0) {
-            cur = next;
-            r = bpf_map_get_next_key(fd_ban, &cur, &next);
-            if (bpf_map_lookup_elem(fd_ban, &cur, &v))
-                continue;
-            if (v <= now) {
-                bpf_map_delete_elem(fd_ban, &cur);
-                continue;
-            }
-            if (!kset_has(g_kcur, &cur))
-                printf("flood ban +%s на %llu с\n", ip_str(&cur, buf, sizeof(buf)),
-                       (unsigned long long)((v - now) / SEC_NS));
-            if (g_kcnt[nt] < MAX_KNOWN)
-                kset_add(nt, &cur);
-        }
-        g_kcur = nt;
+    if (g_kcnt[nt]) {
+        memset(g_kn[nt], 0, sizeof(g_kn[nt]));
+        g_kcnt[nt] = 0;
     }
+    int r = bpf_map_get_next_key(fd_ban, NULL, &next);
+    while (r == 0) {
+        cur = next;
+        r = bpf_map_get_next_key(fd_ban, &cur, &next);
+        if (bpf_map_lookup_elem(fd_ban, &cur, &v))
+            continue;
+        if (v <= now) {
+            bpf_map_delete_elem(fd_ban, &cur);
+            continue;
+        }
+        if (!kset_has(g_kcur, &cur))
+            printf("flood ban +%s на %llu с\n", ip_str(&cur, buf, sizeof(buf)),
+                   (unsigned long long)((v - now) / SEC_NS));
+        if (g_kcnt[nt] < MAX_KNOWN)
+            kset_add(nt, &cur);
+    }
+    g_kcur = nt;
 
     if (now - last_wl >= 60 * SEC_NS) {
         last_wl = now;
         cleanup_expired(fd_wl, now);
     }
-    if (now - last_slots >= 1 * SEC_NS) {
+    if (now - last_slots >= 4 * SEC_NS) {
         last_slots = now;
-        prune_slots(fd_slots, fd_cnt, fd_wl, c, now);
+        prune_slots(fd_slots, fd_cnt, c, now);
     }
 }
 
 /* =====================================================================
  *  Ограничение скорости в обе стороны (traffic shaping)
+ *
+ *  Исходящий трафик (VPS -> IP, download клиента): tc-программа на EGRESS физического интерфейса,
+ *  ключ — IP назначения, трафик с порта VPN (443).
+ *  Входящий трафик (IP -> VPS, upload клиента): tc-программа на INGRESS, ключ — IP отправителя,
+ *  трафик на порт VPN. Задержка входящих пакетов делается через IFB-устройство с qdisc fq.
+ *
+ *  Каждое направление считается НЕЗАВИСИМО (свои счётчики, своя история окна, свой порог).
+ *  Превышение порога в любую сторону сажает IP в общую карту штрафов: после этого и исходящий,
+ *  и входящий трафик IP ограничены штрафной скоростью — каждый в свою сторону отдельно.
+ *  Общий лимит на IP (shape_ip_cap) тоже действует на каждое направление отдельно.
+ *
+ *  В демоне раз в sh_check секунд: считываем счётчики, раскладываем приращения
+ *  по 60 корзинам скользящего окна, считаем среднюю скорость за окно
+ *      avg = bytes * 8 / окно_в_секундах
+ *  и при avg > порога (в любом из направлений) сажаем IP в карту штрафов на N часов.
  * ===================================================================== */
 #define IFB_NAME "xdpfw-ifb"
 
@@ -1599,6 +1504,7 @@ struct shape_rt {
 
 static uint64_t sh_window_sec(const struct config *c) { return c->sh_window_min * 60ULL; }
 static uint64_t sh_bucket_sec(const struct config *c) { return sh_window_sec(c) / NB; }
+/* порог в байтах: Мбит/с * 125000 (байт/с) * окно в секундах; 50 Мбит/с за 60 мин = 22.5e9 байт */
 static uint64_t sh_threshold(const struct config *c)
 {
     return c->sh_avg_mbps * 125000ULL * sh_window_sec(c);
@@ -1639,6 +1545,8 @@ static void tc_detach(int ifindex, enum bpf_tc_attach_point point)
     bpf_tc_detach(&hook, &opts);
 }
 
+/* fq на корне интерфейса (и на IFB, если нужен входящий shaping): он выдерживает пакеты
+ * до времени, выставленного tc-программой */
 static void run_qdisc_helper(const char *iface, int with_ifb)
 {
     char cmd[200];
@@ -1680,6 +1588,8 @@ static void shape_init(struct shape_rt *sh, int ifindex, const struct config *c)
     }
     int in_ok = 1;
     if (bpf_object__load(obj)) {
+        /* возможно, ядро не принимает ingress-программу (bpf_skb_set_tstamp нужен Linux >= 5.18):
+         * пробуем загрузить только исходящую часть */
         bpf_object__close(obj);
         fprintf(stderr, "shape: tc-объект не загрузился целиком — пробую без входящей части\n");
         in_ok = 0;
@@ -1722,6 +1632,7 @@ static void shape_init(struct shape_rt *sh, int ifindex, const struct config *c)
 
 static void state_load(const struct shape_rt *sh, const struct config *c);
 
+/* tc-объект (карты на десятки МБ памяти) загружаем только когда ограничение скорости реально включено */
 static void shape_lazy(struct shape_rt *sh, int ifindex, const struct config *c)
 {
     if (sh->inited || !(c->sh_auto || c->sh_cap))
@@ -1732,6 +1643,7 @@ static void shape_lazy(struct shape_rt *sh, int ifindex, const struct config *c)
         state_load(sh, c);
 }
 
+/* включить/выключить tc-программы по настройкам; вызывается при старте и при reload */
 static void shape_apply(struct shape_rt *sh, const struct config *c)
 {
     if (!sh->ok)
@@ -1811,6 +1723,7 @@ static void reset_hist_for(const struct shape_rt *sh, const struct addr_key *k, 
     reset_one_hist(sh->fd_ip_in, sh->fd_hist_in, k, curb);
 }
 
+/* Один проход по одному направлению. Возвращает число новых штрафов (для счётчика). */
 static uint32_t scan_dir(struct shape_rt *sh, const struct config *c, int fd_ip, int fd_hist,
                          const char *dir, uint64_t now_m, uint64_t curb)
 {
@@ -2049,19 +1962,17 @@ static void warn_udp(const struct config *c)
                 (unsigned long long)c->udp_port, lo, hi);
 }
 
-static void print_cfg_line(const struct config *c, const char *prefix)
+static void print_cfg_line(const char *prefix, const struct config *c)
 {
-    char ud[160], pd[256];
+    char ud[160];
     udp_desc(c, ud, sizeof(ud));
-    ports_desc(c, pd, sizeof(pd));
-    printf("%s ssh=%s, acl=%d, open_ports=%s, udp whitelist=%s, flood=%llu пак./%llu SYN за %llu с, "
-           "whitelist-антифлуд=%s, лимит IP=%s(%llu, %s на %s, слот %llu с)\n",
-           prefix, c->ssh_open ? "all" : "list", c->n_allow, pd, ud,
+    printf("%s ssh=%s, acl=%d, udp whitelist=%s, udp-ответы=%s, flood=%llu пак./%llu SYN за %llu с, "
+           "whitelist-антифлуд=%s, лимит IP=%s(%llu, %s)\n",
+           prefix, c->ssh_open ? "all" : "list", c->n_allow, ud, c->udp_replies ? "on" : "off",
            (unsigned long long)c->flood_pkts, (unsigned long long)c->flood_syn,
            (unsigned long long)c->flood_window, c->wl_flood ? "on" : "off",
            c->ip_limit ? "on" : "off", (unsigned long long)c->ip_limit_max,
-           c->ip_limit_per_dst ? "на каждый IP" : "общий", c->iface,
-           (unsigned long long)c->ip_limit_idle);
+           c->ip_per_addr ? "отдельно для каждого адреса VPS" : "общий на интерфейс");
     printf("%s shaping: авто=%s (среднее за %llu мин > %llu Мбит/с в любую сторону -> %llu Мбит/с на %llu ч), "
            "лимит каждого IP=%s (%llu Мбит/с), входящий трафик=%s\n",
            prefix, c->sh_auto ? "on" : "off", (unsigned long long)c->sh_window_min,
@@ -2070,13 +1981,89 @@ static void print_cfg_line(const struct config *c, const char *prefix)
            (unsigned long long)c->sh_cap_mbps, c->sh_up ? "on" : "off");
 }
 
-static int cmd_run(void)
+/* снять XDP и tc (egress, ingress), удалить IFB */
+static void detach_all(const struct config *c, int ifindex)
+{
+    detach_xdp(ifindex);
+    tc_detach(ifindex, BPF_TC_EGRESS);
+    tc_detach(ifindex, BPF_TC_INGRESS);
+    if (if_nametoindex(IFB_NAME))
+        if (system("ip link del " IFB_NAME " 2>/dev/null") != 0)
+            fprintf(stderr, "не удалось удалить %s\n", IFB_NAME);
+    (void)c;
+}
+
+static int cmd_detach(void)
 {
     struct config cfg;
-    struct shape_rt sh;
-    int has22 = 0;
-    uint64_t last_shape = 0, last_save;
     if (load_cfg(&cfg)) return 1;
+    int ifindex = if_nametoindex(cfg.iface);
+    if (!ifindex) return 1;
+    detach_all(&cfg, ifindex);
+    printf("XDP и tc (egress, ingress) сняты с %s\n", cfg.iface);
+    return 0;
+}
+
+static void clear_pinned(const char *name)
+{
+    char p[160];
+    snprintf(p, sizeof(p), PIN_DIR "/%s", name);
+    int fd = bpf_obj_get(p);
+    if (fd < 0)
+        return;
+    map_clear(fd);
+    close(fd);
+}
+
+/* Главный выключатель = ВЫКЛ: всё, что мы навесили, снимается.
+ * Сначала карты настроек ставятся в "выключено" (даже если снять программу не удастся, она станет пропускать всё),
+ * затем снимаются XDP/tc/IFB, затем сбрасываются блокировки, слоты лимита IP, штрафы по скорости и история.
+ * Whitelist не трогаем: это разрешение, а не ограничение. */
+static void lift_all(const struct config *c)
+{
+    char p[160];
+    int ifindex = if_nametoindex(c->iface);
+    int fd = bpf_obj_get(PIN_DIR "/fw_cfg");
+    if (fd >= 0) {
+        struct fwcfg m;
+        uint32_t k = 0;
+        memset(&m, 0, sizeof(m));
+        bpf_map_lookup_elem(fd, &k, &m);
+        m.fw_on = 0;
+        bpf_map_update_elem(fd, &k, &m, BPF_ANY);
+        close(fd);
+    }
+    snprintf(p, sizeof(p), PIN_DIR "/bw_cfg");
+    fd = bpf_obj_get(p);
+    if (fd >= 0) {
+        struct bwcfg m;
+        uint32_t k = 0;
+        memset(&m, 0, sizeof(m));
+        bpf_map_update_elem(fd, &k, &m, BPF_ANY);       /* enabled=0: tc-программы пакеты не трогают */
+        close(fd);
+    }
+    if (ifindex)
+        detach_all(c, ifindex);
+    clear_pinned("banlist");
+    clear_pinned("flood");
+    clear_pinned("slots");
+    clear_pinned("ip_cnt");
+    clear_pinned("bw_pen");
+    clear_pinned("bw_ip");
+    clear_pinned("bw_ip_in");
+    clear_pinned("bw_hist");
+    clear_pinned("bw_hist_in");
+    unlink(STATE_FILE);
+}
+
+/* Рабочий режим: загрузка программ, цикл. Возвращает 0 — остановка по сигналу, 1 — ошибка,
+ * 2 — по перезагрузке конфига главный выключатель стал ВЫКЛ (всё уже снято). */
+static int run_active(struct config *cfgp)
+{
+    struct config cfg = *cfgp;
+    struct shape_rt sh;
+    int has22 = 0, rc = 0;
+    uint64_t last_shape = 0, last_save;
 
     int ifindex = if_nametoindex(cfg.iface);
     if (!ifindex) { fprintf(stderr, "interface '%s' not found\n", cfg.iface); return 1; }
@@ -2097,26 +2084,24 @@ static int cmd_run(void)
     struct bpf_map *m_slots = bpf_object__find_map_by_name(obj, "slots");
     struct bpf_map *m_cnt = bpf_object__find_map_by_name(obj, "ip_cnt");
     struct bpf_map *m_acl = bpf_object__find_map_by_name(obj, "acl_tcp");
-    struct bpf_map *m_ports = bpf_object__find_map_by_name(obj, "open_ports");
     struct bpf_map *m_cfg = bpf_object__find_map_by_name(obj, "fw_cfg");
     struct bpf_program *prog = bpf_object__find_program_by_name(obj, "xdp_fw");
-    if (!m_wl || !m_ban || !m_slots || !m_cnt || !m_acl || !m_ports || !m_cfg || !prog) {
+    if (!m_wl || !m_ban || !m_slots || !m_cnt || !m_acl || !m_cfg || !prog) {
         fprintf(stderr, "maps/program not found in object\n");
         return 1;
     }
     int fd_wl = bpf_map__fd(m_wl), fd_ban = bpf_map__fd(m_ban);
     int fd_slots = bpf_map__fd(m_slots), fd_cnt = bpf_map__fd(m_cnt);
-    int fd_acl = bpf_map__fd(m_acl), fd_ports = bpf_map__fd(m_ports), fd_cfg = bpf_map__fd(m_cfg);
+    int fd_acl = bpf_map__fd(m_acl), fd_cfg = bpf_map__fd(m_cfg);
 
     sync_acl(fd_acl, &cfg);
-    sync_open_ports(fd_ports, &cfg);
     push_cfg_map(fd_cfg, &cfg);
 
     if (attach_xdp(ifindex, bpf_program__fd(prog))) {
         fprintf(stderr, "XDP attach failed on %s\n", cfg.iface);
         return 1;
     }
-    print_cfg_line(&cfg, "xdpfw started:");
+    print_cfg_line("xdpfw started:", &cfg);
     warn_udp(&cfg);
 
     /* ограничение скорости: его сбой не должен ронять файрвол */
@@ -2126,16 +2111,9 @@ static int cmd_run(void)
     last_save = mono_ns();
     fflush(stdout);
 
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_sig;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-
     while (!g_stop) {
         uint64_t now;
-        sleep(1);
+        sleep(2);
         if (g_stop)
             break;
         if (g_reload) {
@@ -2143,20 +2121,26 @@ static int cmd_run(void)
             g_reload = 0;
             if (load_cfg(&n) == 0) {
                 snprintf(n.iface, sizeof(n.iface), "%s", cfg.iface);
+                if (!n.enabled) {
+                    /* главный выключатель -> ВЫКЛ: снимаем вообще всё */
+                    cfg = n;
+                    lift_all(&cfg);
+                    puts("xdpfw: функционал ВЫКЛЮЧЕН — XDP и tc сняты, порты открыты, "
+                         "блокировки, лимиты и ограничения скорости сброшены");
+                    rc = 2;
+                    goto out;
+                }
                 if (sh.ok && n.sh_window_min != sh.window_min) {
-                    shape_reset(&sh);                /* окно изменилось: накопленная история несопоставима */
+                    shape_reset(&sh);               /* окно изменилось: накопленная история несопоставима */
                     sh.window_min = n.sh_window_min;
                     puts("shape: окно изменено, история сброшена");
                 }
-                if (n.ip_limit_per_dst != cfg.ip_limit_per_dst || !n.ip_limit)
-                    slots_clear(fd_slots, fd_cnt);
                 cfg = n;
                 sync_acl(fd_acl, &cfg);
-                sync_open_ports(fd_ports, &cfg);
                 push_cfg_map(fd_cfg, &cfg);
                 shape_lazy(&sh, ifindex, &cfg);
                 shape_apply(&sh, &cfg);
-                print_cfg_line(&cfg, "config reloaded:");
+                print_cfg_line("config reloaded:", &cfg);
                 warn_udp(&cfg);
             }
         }
@@ -2175,23 +2159,54 @@ static int cmd_run(void)
     }
     if (sh.ok)
         state_save(&sh, &cfg);
-    return 0;
+out:
+    *cfgp = cfg;
+    if (sh.obj)
+        bpf_object__close(sh.obj);
+    if (rc == 2)
+        bpf_object__close(obj);
+    return rc;
 }
 
-static int cmd_detach(void)
+static int cmd_run(void)
 {
     struct config cfg;
+    struct sigaction sa;
+
     if (load_cfg(&cfg)) return 1;
-    int ifindex = if_nametoindex(cfg.iface);
-    if (!ifindex) return 1;
-    detach_xdp(ifindex);
-    tc_detach(ifindex, BPF_TC_EGRESS);
-    tc_detach(ifindex, BPF_TC_INGRESS);
-    if (if_nametoindex(IFB_NAME))
-        if (system("ip link del " IFB_NAME " 2>/dev/null") != 0)
-            fprintf(stderr, "не удалось удалить %s\n", IFB_NAME);
-    printf("XDP и tc (egress, ingress) сняты с %s\n", cfg.iface);
-    return 0;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_sig;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    for (;;) {
+        if (cfg.enabled) {
+            int rc = run_active(&cfg);
+            if (rc != 2)
+                return rc;
+        } else {
+            lift_all(&cfg);         /* на случай, если после прошлого запуска что-то осталось */
+            puts("xdpfw: функционал ВЫКЛЮЧЕН (enabled=no) — ничего не загружено, все порты открыты");
+        }
+        fflush(stdout);
+        /* ждём, пока главный выключатель снова станет ВКЛ (reload) или сервис остановят */
+        for (;;) {
+            struct config n;
+            while (!g_stop && !g_reload)
+                sleep(2);
+            if (g_stop)
+                return 0;
+            g_reload = 0;
+            if (load_cfg(&n) == 0) {
+                cfg = n;
+                if (cfg.enabled) {
+                    puts("xdpfw: функционал ВКЛЮЧЁН");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 static void dump_list(const char *title, int fd)
@@ -2213,51 +2228,6 @@ static void dump_list(const char *title, int fd)
         }
     }
     if (!n) puts("  (пусто)");
-}
-
-/* Вывод текущих активных IP в слотах (клиенты вне whitelist на TCP 443) */
-static void dump_slots(int fd_slots, int fd_wl, const struct config *c)
-{
-    struct slot_key cur, next;
-    char sbuf[INET6_ADDRSTRLEN], dbuf[INET6_ADDRSTRLEN];
-    uint64_t v, now = mono_ns(), idle = c->ip_limit_idle * SEC_NS;
-    int n = 0;
-
-    printf("Активные IP в слотах на 443 (вне whitelist):\n");
-    if (!c->ip_limit) {
-        puts("  (лимит IP выключен)");
-        return;
-    }
-    if (fd_slots < 0) {
-        puts("  (пусто)");
-        return;
-    }
-    int r = bpf_map_get_next_key(fd_slots, NULL, &next);
-    while (r == 0) {
-        cur = next;
-        r = bpf_map_get_next_key(fd_slots, &cur, &next);
-        if (bpf_map_lookup_elem(fd_slots, &cur, &v) != 0)
-            continue;
-        if (now > v && now - v > idle)
-            continue;
-        if (fd_wl >= 0 && map_active(fd_wl, &cur.src, now))
-            continue;
-        uint64_t elapsed = now > v ? now - v : 0;
-        uint64_t rem_ms = idle > elapsed ? (idle - elapsed) / 1000000ULL : 0;
-        if (c->ip_limit_per_dst) {
-            printf("  %-40s -> %-18s (осталось %.1f с)\n",
-                   ip_str(&cur.src, sbuf, sizeof(sbuf)),
-                   ip_str(&cur.dst, dbuf, sizeof(dbuf)),
-                   (double)rem_ms / 1000.0);
-        } else {
-            printf("  %-40s осталось %.1f с\n",
-                   ip_str(&cur.src, sbuf, sizeof(sbuf)),
-                   (double)rem_ms / 1000.0);
-        }
-        n++;
-    }
-    if (!n)
-        puts("  (пусто)");
 }
 
 static void dump_top(int fd_hist, const char *title, const struct config *c)
@@ -2323,19 +2293,24 @@ static int cmd_status(void)
     int fd_ban = bpf_obj_get(PIN_DIR "/banlist");
     int fd_dr = bpf_obj_get(PIN_DIR "/fw_drops");
     int fd_cnt = bpf_obj_get(PIN_DIR "/ip_cnt");
-    int fd_slots = bpf_obj_get(PIN_DIR "/slots");
+    if (load_cfg(&cfg) == 0 && !cfg.enabled) {
+        puts("ФУНКЦИОНАЛ ВЫКЛЮЧЕН (enabled=no): XDP и tc сняты, все порты открыты, скорость не ограничивается.");
+        puts("Включить: xdpfw-menu, пункт «ВКЛ/ВЫКЛ весь функционал».");
+        return 0;
+    }
     if (fd_wl < 0 || fd_ban < 0 || fd_dr < 0) {
         fprintf(stderr, "xdpfw не запущен (нет pinned maps в %s)\n", PIN_DIR);
         return 1;
     }
     if (load_cfg(&cfg) == 0) {
-        char ud[160], pd[256];
+        char ud[160];
         udp_desc(&cfg, ud, sizeof(ud));
-        ports_desc(&cfg, pd, sizeof(pd));
         printf("SSH 22: %s | UDP для whitelist: %s | whitelist: %llu ч, продление раз в %llu мин\n",
                cfg.ssh_open ? "открыт всем" : "только список", ud,
                (unsigned long long)(cfg.wl_ttl / 3600), (unsigned long long)(cfg.wl_refresh / 60));
-        printf("Доп. открытые порты: %s\n", pd);
+        printf("UDP-ответы на исходящие запросы сервера (эфемерные порты): %s%s\n",
+               cfg.udp_replies ? "пропускаются" : "закрыты",
+               cfg.udp443_wl ? "" : " (весь прочий входящий UDP закрыт для всех)");
         printf("Антифлуд: %llu пак. и %llu SYN за %llu с, бан %llu мин\n",
                (unsigned long long)cfg.flood_pkts, (unsigned long long)cfg.flood_syn,
                (unsigned long long)cfg.flood_window, (unsigned long long)(cfg.ban_sec / 60));
@@ -2343,44 +2318,31 @@ static int cmd_status(void)
                cfg.wl_flood ? "вкл" : "выкл", (unsigned long long)cfg.wl_flood_pkts,
                (unsigned long long)cfg.wl_flood_syn, (unsigned long long)cfg.wl_flood_window,
                (unsigned long long)(cfg.wl_ban_sec / 60));
+        printf("Лимит IP на 443: %s, не более %llu IP вне whitelist, пул: %s\n",
+               cfg.ip_limit ? "вкл" : "выкл", (unsigned long long)cfg.ip_limit_max,
+               cfg.ip_per_addr ? "отдельный для каждого адреса VPS на интерфейсе" : "общий на весь интерфейс");
         if (fd_cnt >= 0) {
-            if (cfg.ip_limit_per_dst) {
-                struct addr_key cur, next;
-                uint32_t used = 0, total = 0, n_dst = 0;
-                int r = bpf_map_get_next_key(fd_cnt, NULL, &next);
-                while (r == 0) {
-                    cur = next;
-                    r = bpf_map_get_next_key(fd_cnt, &cur, &next);
-                    if (bpf_map_lookup_elem(fd_cnt, &cur, &used) == 0 && used > 0) {
-                        total += used;
-                        n_dst++;
-                    }
-                }
-                printf("Лимит IP на 443: %s (на каждый IP в %s: до %llu, слот %llu с), занято слотов %u (активных IP %s: %u)\n",
-                       cfg.ip_limit ? "вкл" : "выкл", cfg.iface,
-                       (unsigned long long)cfg.ip_limit_max, (unsigned long long)cfg.ip_limit_idle,
-                       total, cfg.iface, n_dst);
-                if (n_dst > 0) {
-                    char dbuf[INET6_ADDRSTRLEN];
-                    r = bpf_map_get_next_key(fd_cnt, NULL, &next);
-                    while (r == 0) {
-                        cur = next;
-                        r = bpf_map_get_next_key(fd_cnt, &cur, &next);
-                        if (bpf_map_lookup_elem(fd_cnt, &cur, &used) == 0 && used > 0)
-                            printf("  слоты на %-35s %u из %llu\n",
-                                   ip_str(&cur, dbuf, sizeof(dbuf)), used,
-                                   (unsigned long long)cfg.ip_limit_max);
-                    }
-                }
-            } else {
-                struct addr_key zk = {};
-                uint32_t used = 0;
-                bpf_map_lookup_elem(fd_cnt, &zk, &used);
-                printf("Лимит IP на 443: %s (общий на %s, слот %llu с), занято слотов %u из %llu\n",
-                       cfg.ip_limit ? "вкл" : "выкл", cfg.iface,
-                       (unsigned long long)cfg.ip_limit_idle, used,
-                       (unsigned long long)cfg.ip_limit_max);
+            struct addr_key cur, next;
+            uint32_t used;
+            int any = 0;
+            int r = bpf_map_get_next_key(fd_cnt, NULL, &next);
+            while (r == 0) {
+                static const uint8_t zero16[16] = {0};
+                char ib[INET6_ADDRSTRLEN];
+                cur = next;
+                r = bpf_map_get_next_key(fd_cnt, &cur, &next);
+                if (bpf_map_lookup_elem(fd_cnt, &cur, &used))
+                    continue;
+                if (!memcmp(cur.a, zero16, 16))
+                    printf("  весь интерфейс %s: занято %u из %llu\n", cfg.iface, used,
+                           (unsigned long long)cfg.ip_limit_max);
+                else
+                    printf("  адрес VPS %s: занято %u из %llu\n", ip_str(&cur, ib, sizeof(ib)), used,
+                           (unsigned long long)cfg.ip_limit_max);
+                any = 1;
             }
+            if (!any)
+                puts("  (слоты не заняты)");
         }
         printf("Ограничение скорости (исходящий и входящий трафик, каждый отдельно): авто=%s "
                "(среднее за %llu мин > %llu Мбит/с ≈ %.1f ГБ в любую сторону -> %llu Мбит/с в каждую сторону на %llu ч), "
@@ -2398,7 +2360,6 @@ static int cmd_status(void)
     if (v && bpf_map_lookup_elem(fd_dr, &z, v) == 0)
         for (int i = 0; i < ncpu; i++) sum += v[i];
     printf("Отброшено пакетов: %llu\n", (unsigned long long)sum);
-    dump_slots(fd_slots, fd_wl, &cfg);
     dump_list("Whitelist (авторизованы в Xray)", fd_wl);
     dump_list("Заблокированы на 443 (флуд)", fd_ban);
     dump_shape(&cfg);
@@ -2476,6 +2437,7 @@ static int cmd_wl_add(int argc, char **argv)
     int fd_slots = bpf_obj_get(PIN_DIR "/slots");
     int fd_cnt = bpf_obj_get(PIN_DIR "/ip_cnt");
     int fd_ban = bpf_obj_get(PIN_DIR "/banlist");
+    if (!cfg.enabled) return 0;             /* весь функционал выключен: whitelist не нужен */
     if (fd_wl < 0) { fprintf(stderr, "xdpfw не запущен\n"); return 1; }
 
     uint64_t now = mono_ns();
@@ -2491,8 +2453,8 @@ static int cmd_wl_add(int argc, char **argv)
         if (parse_ip(argv[i], &k) || is_special(&k))
             continue;
         int active = bpf_map_lookup_elem(fd_wl, &k, &cur) == 0 && cur > now;
-        if (!active)
-            free_src_slots(fd_slots, fd_cnt, &k);
+        if (fd_slots >= 0)
+            drop_slots_for(fd_slots, fd_cnt, &k);
         if (active && cur > now + ttl_ns - refresh_ns)
             continue;                       /* запись обновлялась недавно */
         bpf_map_update_elem(fd_wl, &k, &exp, BPF_ANY);
@@ -2541,6 +2503,7 @@ IP_RE='([0-9]{1,3}\.){3}[0-9]{1,3}|([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}'
 ERR_RE='unknown command|failed to|rpc error|connection refused|deadline exceeded'
 
 declare -A C=() ADDED=()
+OFF=0
 CONTAINER=remnanode; XRAY_BIN=/usr/local/bin/xray; CLI=/usr/local/lib/xdpfw/xray-cli
 PORT=18085; INTERVAL=2; REFRESH=3600
 BRIDGE_PID=""; BRIDGE_SOCK=""; LAST_ERR=""; LAST_RAW=""; CPID=""; SOCKET_NAME=""
@@ -2570,6 +2533,8 @@ load_conf()
     m="${C[whitelist_refresh_minutes]:-60}"
     [[ "$m" =~ ^[0-9]+$ ]] || m=60
     REFRESH=$(( m * 60 ))
+    # главный выключатель: при enabled=no опрос Xray не нужен
+    case "${C[enabled]:-yes}" in [Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]|0|[Oo][Ff][Ff]) OFF=1 ;; *) OFF=0 ;; esac
 }
 
 # пауза без запуска внешнего sleep
@@ -2695,7 +2660,7 @@ cycle()
     if [ $rc -ne 0 ] || [[ "$low" =~ $ERR_RE ]]; then
         [[ "$low" =~ unknown\ command ]] && rm -f "$CLI"      # старая копия CLI: перекопируем
         LAST_RAW=""
-        FORCE_SOCK=1                                          # возможно, Xray перезапустился: имя сокета сменилось
+        FORCE_SOCK=1                                           # возможно, Xray перезапустился: имя сокета сменилось
         warn "Xray API: ${RAW:0:300}"
         return 1
     fi
@@ -2741,10 +2706,17 @@ cycle()
 load_conf
 n=0
 while true; do
-    cycle || true
+    if [ "$OFF" = "1" ]; then
+        # файрвол выключен: мост и опрос не нужны; конфиг перечитываем каждый проход, чтобы быстро включиться
+        if [ -n "$BRIDGE_PID" ]; then log "функционал выключен (enabled=no): опрос Xray остановлен"; fi
+        stop_bridge
+        LAST_RAW=""; NEXT_FULL=0
+    else
+        cycle || true
+    fi
     n=$(( n + 1 ))
     [ "${MAX_CYCLES:-0}" != "0" ] && [ "$n" -ge "${MAX_CYCLES:-0}" ] && break
-    (( n % 15 == 0 )) && load_conf
+    if [ "$OFF" = "1" ] || (( n % 15 == 0 )); then load_conf; fi
     nap
 done
 POLL_EOF
@@ -2771,15 +2743,8 @@ cfg_set()  {
 cfg_add()  { grep -qx "$1=$2" "$CONF" || echo "$1=$2" >> "$CONF"; }
 cfg_del()  { local v="${2//./\\.}"; sed -i "\|^$1=${v}\$|d" "$CONF"; }
 cfg_del_all() { sed -i "/^$1=/d" "$CONF"; }
-cfg_set_port() { # cfg_set_port <port> <tcp|udp|both>
-    if grep -q "^open_port=$1," "$CONF"; then
-        sed -i "s|^open_port=$1,.*|open_port=$1,$2|" "$CONF"
-    else
-        echo "open_port=$1,$2" >> "$CONF"
-    fi
-}
-cfg_del_port() { sed -i "\|^open_port=$1,|d" "$CONF"; }
 
+fw_on()  { is_on "$(cfg_get enabled yes)"; }
 is_on()  { case "${1,,}" in yes|true|1|on) return 0;; *) return 1;; esac; }
 onoff()  { if is_on "$1"; then echo "ВКЛ"; else echo "ВЫКЛ"; fi; }
 valid_ip() { python3 -c 'import ipaddress,sys; ipaddress.ip_address(sys.argv[1])' "$1" 2>/dev/null; }
@@ -2822,37 +2787,25 @@ check_lockout() {
     return 0
 }
 
-proto_label() {
-    case "${1,,}" in
-        tcp)  echo "TCP" ;;
-        udp)  echo "UDP" ;;
-        *)    echo "TCP+UDP" ;;
-    esac
-}
-
-open_ports_summary() {
-    local line p pr out=""
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        p="${line%%,*}"
-        pr="${line#*,}"
-        [[ "$pr" == "both" ]] && pr="tcp+udp"
-        out+="${out:+, }${p}/${pr}"
-    done < <(cfg_list open_port)
-    echo "${out:-— нет —}"
+# описание пула лимита IP для заголовка
+pool_desc() {
+    if is_on "$(cfg_get ip_limit_per_addr yes)"; then
+        echo "отдельный пул для каждого IP в $(cfg_get iface eth0)"
+    else
+        echo "общий пул на весь $(cfg_get iface eth0)"
+    fi
 }
 
 # ---------- экран ----------
 header() {
     clear 2>/dev/null || true
-    local n ssh f wf il sa sc gb ifc ud
-    ifc="$(cfg_get iface ens3)"
+    local n ssh f wf il sa sc gb
     n="$(cfg_list allow_ssh | grep -c .)"
     if [[ "$(cfg_get ssh_mode list)" == "all" ]]; then ssh="открыт ВСЕМ"; else ssh="только список ($n IP)"; fi
-    if [[ "$(cfg_get flood_packets 800)" == "0" ]]; then
+    if [[ "$(cfg_get flood_packets 300)" == "0" ]]; then
         f="ВЫКЛ"
     else
-        f="$(cfg_get flood_packets 800) пак., $(cfg_get flood_syn 25) SYN / $(cfg_get flood_window 1) с; бан $(cfg_get ban_minutes 60) мин"
+        f="$(cfg_get flood_packets 300) пак., $(cfg_get flood_syn 10) SYN / $(cfg_get flood_window 1) с; бан $(cfg_get ban_minutes 60) мин"
     fi
     if is_on "$(cfg_get wl_flood no)"; then
         wf="ВКЛ: $(cfg_get wl_flood_packets 150000) пак., $(cfg_get wl_flood_syn 300) SYN / $(cfg_get wl_flood_window 1) с; бан $(cfg_get wl_ban_minutes 10) мин"
@@ -2860,18 +2813,9 @@ header() {
         wf="ВЫКЛ (whitelist не проверяется)"
     fi
     if is_on "$(cfg_get ip_limit yes)"; then
-        if is_on "$(cfg_get ip_limit_per_dst yes)"; then
-            il="ВКЛ: не более $(cfg_get ip_limit_max 50) IP вне whitelist на КАЖДЫЙ IP в $ifc (слот $(cfg_get ip_limit_idle 1) с)"
-        else
-            il="ВКЛ: не более $(cfg_get ip_limit_max 50) IP вне whitelist (общий на $ifc, слот $(cfg_get ip_limit_idle 1) с)"
-        fi
+        il="ВКЛ: не более $(cfg_get ip_limit_max 50) IP вне whitelist, $(pool_desc)"
     else
         il="ВЫКЛ"
-    fi
-    if is_on "$(cfg_get udp443_whitelist no)"; then
-        ud="ВКЛ (открыт только для whitelist: $(udp_desc))"
-    else
-        ud="ВЫКЛ (UDP закрыт для всех)"
     fi
     gb="$(gb_of "$(cfg_get shape_avg_mbps 50)" "$(cfg_get shape_window_min 60)")"
     if is_on "$(cfg_get shape_auto no)"; then
@@ -2881,15 +2825,17 @@ header() {
     fi
     if is_on "$(cfg_get shape_ip_cap no)"; then sc="ВКЛ: $(cfg_get shape_ip_cap_mbps 250) Мбит/с на каждый IP, в каждую сторону"; else sc="ВЫКЛ ($(cfg_get shape_ip_cap_mbps 250) Мбит/с)"; fi
     echo "===================== XDP-файрвол (xdpfw) ====================="
+    if ! fw_on; then
+        echo " !!! ВЕСЬ ФУНКЦИОНАЛ ВЫКЛЮЧЕН: XDP и tc сняты, все порты открыты, скорость не ограничивается !!!"
+    fi
     echo " SSH 22 ........................... $ssh"
     echo " TCP 1433 (нода Remnawave) ........ $(cfg_get allow_1433 '— закрыт —')"
-    echo " Доп. открытые порты .............. $(open_ports_summary)"
-    echo " UDP для whitelist ................ $ud"
+    echo " UDP для whitelist ................ $(onoff "$(cfg_get udp443_whitelist no)"): $(udp_desc)"
+    echo " UDP-ответы на запросы сервера .... $(onoff "$(cfg_get udp_replies yes)") (эфемерные порты: DNS/NTP/UDP через Xray; выкл — UDP закрыт полностью)"
     echo " Whitelist ........................ $(cfg_get whitelist_hours 24) ч (продление раз в $(cfg_get whitelist_refresh_minutes 60) мин)"
     echo " Антифлуд (обычные IP) ............ $f"
     echo " Антифлуд (whitelist) ............. $wf"
     echo " Лимит IP на 443 .................. $il"
-    echo " Лимит 443 для каждого IP в $ifc .. $(onoff "$(cfg_get ip_limit_per_dst yes)")"
     echo " Скорость: автоограничение ........ $sa"
     echo " Скорость: лимит на каждый IP ..... $sc"
     echo " Скорость: входящий трафик ........ $(onoff "$(cfg_get shape_upload no)") (IP -> VPS; выкл — ограничивается только исходящий)"
@@ -2975,12 +2921,12 @@ manual_flood() {  # префикс
 
 act_flood() {
     echo "Антифлуд обычных IP (вне whitelist) на TCP 443 — лимиты на каждый IP:"
-    echo "  Сейчас: $(cfg_get flood_packets 800) пакетов и $(cfg_get flood_syn 25) новых соединений за $(cfg_get flood_window 1) с"
+    echo "  Сейчас: $(cfg_get flood_packets 300) пакетов и $(cfg_get flood_syn 10) новых соединений за $(cfg_get flood_window 1) с"
     echo
     echo "  1) Низкая        — 5000 пакетов, 150 новых соединений в секунду"
     echo "  2) Средняя       — 2000 пакетов,  60 новых соединений в секунду"
-    echo "  3) Высокая       —  800 пакетов,  25 новых соединений в секунду (по умолчанию)"
-    echo "  4) Максимальная  —  300 пакетов,  10 новых соединений в секунду"
+    echo "  3) Высокая       —  800 пакетов,  25 новых соединений в секунду"
+    echo "  4) Максимальная  —  300 пакетов,  10 новых соединений в секунду (по умолчанию)"
     echo "  5) Вручную"
     echo "  0) Отключить антифлуд обычных IP"
     read -r -p "Выбор [Enter — отмена]: " c || exit 0
@@ -3053,33 +2999,18 @@ act_wl_flood() {
     done
 }
 
-act_ip_limit_per_dst_toggle() {
-    local ifc; ifc="$(cfg_get iface ens3)"
-    if is_on "$(cfg_get ip_limit_per_dst yes)"; then
-        cfg_set ip_limit_per_dst no
-        echo "Лимит подключенных IP на 443 для каждого IP в $ifc: ВЫКЛ (теперь общий лимит на весь $ifc)"
-    else
-        cfg_set ip_limit_per_dst yes
-        echo "Лимит подключенных IP на 443 для каждого IP в $ifc: ВКЛ (до $(cfg_get ip_limit_max 50) IP вне whitelist на каждый адрес $ifc)"
-    fi
-    apply
-    pause
-}
-
 act_ip_limit() {
     while true; do
         header
-        local ifc; ifc="$(cfg_get iface ens3)"
         echo "---- Лимит IP на TCP 443 ----"
         echo "  Пакеты пропускаются не более чем от N разных IP. IP из whitelist не считаются"
         echo "  (у них приоритет), остальные сверх лимита дропаются."
-        echo "  Состояние: $(onoff "$(cfg_get ip_limit yes)"),  N = $(cfg_get ip_limit_max 50),  слот освобождается через $(cfg_get ip_limit_idle 1) с без пакетов"
-        echo "  Лимит на 443 для каждого IP-адреса в $ifc отдельно: $(onoff "$(cfg_get ip_limit_per_dst yes)")"
+        echo "  Состояние: $(onoff "$(cfg_get ip_limit yes)"),  N = $(cfg_get ip_limit_max 50),  слот освобождается через $(cfg_get ip_limit_idle 30) с без пакетов"
+        echo "  Пул: $(pool_desc) (переключается пунктом 17 главного меню)"
         echo
-        echo "  1) Включить / выключить лимит IP на 443"
+        echo "  1) Включить / выключить"
         echo "  2) Изменить N (макс. число IP)"
-        echo "  3) Время освобождения слота (секунды, по умолчанию 1)"
-        echo "  4) Переключатель: лимит для каждого IP-адреса в $ifc (вкл/выкл)"
+        echo "  3) Время освобождения слота (секунды)"
         echo "  0) Назад"
         read -r -p "Выбор: " c || exit 0
         case "$c" in
@@ -3092,11 +3023,48 @@ act_ip_limit() {
             3)
                 read_num "Секунд без пакетов до освобождения слота (1-3600, Enter — отмена): " 1 3600 && { cfg_set ip_limit_idle "$NUM"; apply; }
                 pause ;;
-            4)
-                act_ip_limit_per_dst_toggle ;;
             0|"") return ;;
         esac
     done
+}
+
+# переключатель: лимит IP на 443 отдельно для каждого IP интерфейса / общий на весь интерфейс
+act_ip_pool() {
+    local ifc; ifc="$(cfg_get iface eth0)"
+    if is_on "$(cfg_get ip_limit_per_addr yes)"; then
+        echo "Сейчас: у каждого IP-адреса на $ifc СВОЙ пул из $(cfg_get ip_limit_max 50) IP (вне whitelist) на 443."
+        echo "После выключения лимит $(cfg_get ip_limit_max 50) IP будет общим на весь интерфейс $ifc."
+        cfg_set ip_limit_per_addr no
+    else
+        echo "Сейчас: лимит $(cfg_get ip_limit_max 50) IP общий на весь интерфейс $ifc."
+        echo "После включения у каждого IP-адреса на $ifc будет свой независимый пул из $(cfg_get ip_limit_max 50) IP."
+        cfg_set ip_limit_per_addr yes
+    fi
+    apply
+    echo "Теперь: $(pool_desc)"
+    if ! is_on "$(cfg_get ip_limit yes)"; then echo "(сам лимит IP выключен — включите его в пункте 9)"; fi
+    pause
+}
+
+# главный выключатель: ВКЛ/ВЫКЛ весь функционал
+act_master() {
+    local a
+    if fw_on; then
+        echo "ВЫКЛЮЧЕНИЕ снимет ВСЁ: XDP и tc (ограничения скорости, IFB) будут сняты,"
+        echo "все порты (включая SSH и 1433) станут открыты для всех, блокировки, лимит IP"
+        echo "и штрафы по скорости сбросятся. Whitelist останется."
+        read -r -p "Выключить весь функционал? [y/N] " a || exit 0
+        [[ "$a" =~ ^[yY]$ ]] || { echo "Отменено."; pause; return; }
+        cfg_set enabled no; apply
+        echo "Функционал ВЫКЛЮЧЕН."
+    else
+        if [[ "$(cfg_get ssh_mode list)" == "list" ]]; then
+            check_lockout || { echo "Отменено."; pause; return; }
+        fi
+        cfg_set enabled yes; apply
+        echo "Функционал ВКЛЮЧЁН."
+    fi
+    pause
 }
 
 act_1433() {
@@ -3115,7 +3083,7 @@ act_1433() {
 
 # адреса этого VPS на интерфейсе файрвола (глобальные IPv4/IPv6)
 local_ips() {
-    ip -o addr show dev "$(cfg_get iface ens3)" scope global 2>/dev/null |
+    ip -o addr show dev "$(cfg_get iface eth0)" scope global 2>/dev/null |
         awk '{split($4, a, "/"); print a[1]}'
 }
 
@@ -3131,17 +3099,15 @@ act_udp() {
     while true; do
         header
         echo "---- UDP для IP из whitelist ----"
-        if is_on "$(cfg_get udp443_whitelist no)"; then
-            echo "  Состояние: ВКЛ — открыт только для whitelist ($(udp_desc))"
-        else
-            echo "  Состояние: ВЫКЛ — входящий UDP ЗАКРЫТ для всех (при включении: $(udp_desc))"
-        fi
-        echo "  (Когда ВЫКЛ — любые входящие UDP-соединения блокируются для всех;"
-        echo "   когда ВКЛ — UDP-пакеты на выбранный порт пропускаются только от IP из whitelist)"
+        echo "  Состояние: $(onoff "$(cfg_get udp443_whitelist no)"), $(udp_desc)"
+        echo "  (UDP-пакеты на этот порт пропускаются только от IP из whitelist; остальным — drop)"
+        echo "  Если UDP для whitelist выключен — порт $(cfg_get udp_port 443) и 443/udp закрыты для всех."
+        echo "  Ответы на исходящие запросы сервера (эфемерные порты) пропускаются: $(onoff "$(cfg_get udp_replies yes)")"
         echo
-        echo "  1) Вкл/выкл (выкл = закрыть UDP для всех)"
+        echo "  1) Вкл/выкл"
         echo "  2) Изменить порт (сейчас $(cfg_get udp_port 443))"
-        echo "  3) Выбрать адрес VPS, на котором порт открыт при включении (или любой)"
+        echo "  3) Выбрать адрес VPS, на котором порт открыт (или любой)"
+        echo "  4) Ответы на исходящий UDP сервера (DNS/NTP/UDP через Xray): $(onoff "$(cfg_get udp_replies yes)")"
         echo "  0) Назад"
         read -r -p "Выбор: " c || exit 0
         case "$c" in
@@ -3161,7 +3127,7 @@ act_udp() {
                 pause ;;
             3)
                 list="$(local_ips)"
-                echo "Адреса этого VPS на $(cfg_get iface ens3):"
+                echo "Адреса этого VPS на $(cfg_get iface eth0):"
                 n=0
                 while read -r ip; do
                     [[ -z "$ip" ]] && continue
@@ -3179,94 +3145,19 @@ act_udp() {
                     if valid_ip "$a" && grep -qxF "$a" <<< "$list"; then
                         cfg_set udp_ip "$a"; apply
                     else
-                        echo "Этот адрес не принадлежит VPS на $(cfg_get iface ens3) — выберите из списка."
+                        echo "Этот адрес не принадлежит VPS на $(cfg_get iface eth0) — выберите из списка."
                     fi
                 fi
                 pause ;;
-            0|"") return ;;
-        esac
-    done
-}
-
-# ---------- управление дополнительными открытыми портами ----------
-act_open_ports() {
-    local c p pr_ch proto line i sel target_port
-    local -a arr=()
-    while true; do
-        header
-        echo "---- Открытые через меню порты (TCP / UDP / TCP+UDP) ----"
-        mapfile -t arr < <(cfg_list open_port)
-        if [[ ${#arr[@]} -eq 0 ]]; then
-            echo "  Сейчас открытых через это меню портов нет."
-        else
-            echo "  Список открытых портов:"
-            for i in "${!arr[@]}"; do
-                line="${arr[$i]}"
-                p="${line%%,*}"
-                proto="${line#*,}"
-                printf '    %2d) порт %-6s — %s\n' "$((i+1))" "$p" "$(proto_label "$proto")"
-            done
-        fi
-        echo
-        echo "  1) Открыть порт (выбрать TCP, UDP или TCP+UDP)"
-        echo "  2) Закрыть ранее открытый порт"
-        echo "  0) Назад"
-        read -r -p "Выбор: " c || exit 0
-        case "$c" in
-            1)
-                read_num "Введите номер порта для открытия (1-65535, Enter — отмена): " 1 65535 || { pause; continue; }
-                p="$NUM"
-                echo "Выберите протокол для порта $p:"
-                echo "  1) TCP"
-                echo "  2) UDP"
-                echo "  3) TCP и UDP (и то, и то)"
-                read -r -p "Выбор [1]: " pr_ch || exit 0
-                case "${pr_ch:-1}" in
-                    1) proto="tcp" ;;
-                    2) proto="udp" ;;
-                    3) proto="both" ;;
-                    *) echo "Некорректный выбор."; pause; continue ;;
-                esac
-                cfg_set_port "$p" "$proto"
-                echo "Порт $p ($(proto_label "$proto")) открыт."
-                apply
-                pause ;;
-            2)
-                if [[ ${#arr[@]} -eq 0 ]]; then
-                    echo "Нет открытых портов для закрытия."
-                    pause
-                    continue
+            4)
+                if is_on "$(cfg_get udp_replies yes)"; then
+                    echo "Если выключить, UDP будет закрыт ПОЛНОСТЬЮ: перестанут работать DNS и NTP самого сервера"
+                    echo "и UDP-трафик клиентов через Xray (ответы приходят на эфемерные порты). DHCP останется."
+                    read -r -p "Закрыть и ответы тоже? [y/N] " a || exit 0
+                    [[ "$a" =~ ^[yY]$ ]] && { cfg_set udp_replies no; apply; }
+                else
+                    cfg_set udp_replies yes; apply
                 fi
-                echo
-                read -r -p "Введите номер по списку (1-${#arr[@]}), сам порт или 'all' (закрыть все) [Enter — отмена]: " sel || exit 0
-                [[ -z "$sel" ]] && continue
-                if [[ "${sel,,}" == "all" ]]; then
-                    cfg_del_all open_port
-                    echo "Все открытые через меню порты закрыты."
-                    apply
-                    pause
-                    continue
-                fi
-                if ! is_num "$sel"; then
-                    echo "Некорректный ввод."
-                    pause
-                    continue
-                fi
-                target_port=""
-                if (( sel >= 1 && sel <= ${#arr[@]} )); then
-                    line="${arr[$((sel-1))]}"
-                    target_port="${line%%,*}"
-                elif grep -q "^open_port=${sel}," "$CONF"; then
-                    target_port="$sel"
-                fi
-                if [[ -z "$target_port" ]]; then
-                    echo "Порт не найден в списке открытых."
-                    pause
-                    continue
-                fi
-                cfg_del_port "$target_port"
-                echo "Порт $target_port закрыт."
-                apply
                 pause ;;
             0|"") return ;;
         esac
@@ -3370,26 +3261,26 @@ act_unshape() {
 # ---------- главный цикл ----------
 while true; do
     header
-    echo "  1) Статус: слоты, whitelist, блокировки, счётчики"
+    echo "  1) Статус: whitelist, блокировки, счётчики"
     echo "  2) SSH 22: режим (только список / всем)"
     echo "  3) SSH 22: показать и добавить IP"
     echo "  4) SSH 22: удалить IP"
-    echo "  5) Антифлуд обычных IP: жёсткость (по умолчанию Высокая: 800 пак.)"
+    echo "  5) Антифлуд обычных IP: жёсткость"
     echo "  6) Антифлуд обычных IP: время блокировки (минуты)"
     echo "  7) Whitelist: время (часы)"
     echo "  8) Антифлуд для whitelist: вкл/выкл, жёсткость, время блокировки"
-    echo "  9) Лимит IP на 443 (не более N IP вне whitelist): вкл/выкл, N, слот"
+    echo "  9) Лимит IP на 443 (не более N IP вне whitelist): вкл/выкл, N"
     echo " 10) TCP 1433: заменить IP"
-    echo " 11) UDP для whitelist: вкл/выкл (выкл = закрыть UDP всем), порт, адрес VPS"
+    echo " 11) UDP для whitelist: вкл/выкл, порт, адрес VPS"
     echo " 12) Снять блокировку с IP"
     echo " 13) Ограничение скорости (исходящий и входящий трафик): настройки"
     echo " 14) Снять ограничение скорости с IP"
     echo " 15) Перезапустить сервисы"
-    echo " 17) Переключатель: лимит IP на 443 для каждого IP в $(cfg_get iface ens3) (сейчас $(onoff "$(cfg_get ip_limit_per_dst yes)"))"
-    echo " 18) Открыть / закрыть порт (TCP / UDP / TCP+UDP)"
     if systemctl is-active --quiet xdpfw-rollback.timer 2>/dev/null; then
         echo " 16) ПОДТВЕРДИТЬ установку (отменить авто-откат файрвола)"
     fi
+    echo " 17) Переключатель: лимит IP на 443 для каждого IP в $(cfg_get iface eth0) (сейчас $(onoff "$(cfg_get ip_limit_per_addr yes)"))"
+    echo " 18) Переключатель: ВЕСЬ функционал файрвола (сейчас $(onoff "$(cfg_get enabled yes)"); выкл — все порты открыты, скорость не ограничивается)"
     echo "  0) Выход"
     read -r -p "Выбор: " ch || exit 0
     case "$ch" in
@@ -3409,8 +3300,8 @@ while true; do
         14) act_unshape ;;
         15) act_restart ;;
         16) act_confirm ;;
-        17) act_ip_limit_per_dst_toggle ;;
-        18) act_open_ports ;;
+        17) act_ip_pool ;;
+        18) act_master ;;
         0|q|Q) exit 0 ;;
         *) ;;
     esac
@@ -3587,10 +3478,10 @@ cat <<DONE
   Лог whitelist:       journalctl -u xdpfw-xray -f   (кто авторизован в Xray)
   Снять блокировку:    xdpfw unban 1.2.3.4   (или: xdpfw unban all)
   Снять ограничение скорости:  xdpfw unshape 1.2.3.4   (или: xdpfw unshape all)
-  Лимит IP на 443 для каждого IP в $IFACE: меню xdpfw-menu, пункт 9 или 17
-  Открыть / закрыть доп. порт (TCP/UDP): меню xdpfw-menu, пункт 18
   UDP для whitelist (порт, адрес VPS): меню xdpfw-menu, пункт 11
   Ограничение скорости в обе стороны: меню xdpfw-menu, пункт 13 (входящий трафик — через IFB; смотрите journalctl -u xdpfw)
+  Лимит IP на 443 по каждому адресу интерфейса / общий: меню xdpfw-menu, пункт 17
+  ВКЛ/ВЫКЛ весь функционал (выкл — все порты открыты, скорость не ограничивается): меню xdpfw-menu, пункт 18
   Конфиг:              $CONF
   Выключить:           systemctl disable --now xdpfw xdpfw-xray
 
